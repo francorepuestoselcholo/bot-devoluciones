@@ -1,4 +1,5 @@
-import makeWASocket, { useMultiFileAuthState, DisconnectReason } from '@adiwajshing/baileys'
+import pkg from "@adiwajshing/baileys";
+const { makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion } = pkg;
 import express from 'express'
 import { google } from 'googleapis'
 import fs from 'fs'
@@ -39,6 +40,16 @@ const startBot = async () => {
     }
   })
 }
+async function startBot() {
+  const { state, saveCreds } = await useMultiFileAuthState("./auth_info");
 
-startBot()
+  const sock = makeWASocket({
+    auth: state,
+    printQRInTerminal: true
+  });
+
+  sock.ev.on("creds.update", saveCreds);
+}
+
+startBot();
 app.listen(3000, () => console.log('Servidor escuchando en puerto 3000'))
