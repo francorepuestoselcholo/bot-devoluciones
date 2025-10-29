@@ -6,9 +6,10 @@
     "start": "node index.js"
   },
   "dependencies": {
-    "@adiwajshing/baileys": "^6.7.5",
+    "@adiwajshing/baileys": "6.7.5"
     "express": "^4.18.2",
     "googleapis": "^133.0.0"
   }
 }
+
 
