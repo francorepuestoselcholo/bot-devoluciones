@@ -10,7 +10,15 @@ let lastQR = null;
 app.get("/", (req, res) => {
   res.send(`
     <h2>🤖 Bot de devoluciones activo</h2>
-    <p>${lastQR ? `<img src="${lastQR}" width="250" />` : "Esperando código QR..."}</p>
+    ${
+      lastQR
+        ? `
+        <p>Escaneá este código QR para vincular WhatsApp:</p>
+        <img src="${lastQR}" width="250" />
+        <p><a href="${lastQR}" target="_blank">🔗 Abrir QR en nueva pestaña</a></p>
+      `
+        : "<p>Esperando código QR...</p>"
+    }
     <meta http-equiv="refresh" content="10">
   `);
 });
@@ -23,7 +31,7 @@ async function startBot() {
   const { state, saveCreds } = await useMultiFileAuthState("./auth_info");
 
   const sock = makeWASocket({
-    auth: state,
+    auth: state
   });
 
   sock.ev.on("creds.update", saveCreds);
@@ -34,6 +42,7 @@ async function startBot() {
     if (qr) {
       console.log("📱 Se generó un nuevo código QR");
       lastQR = await qrcode.toDataURL(qr);
+      console.log("🌐 URL QR:", lastQR.substring(0, 80) + "..."); // muestra parte del enlace
     }
 
     if (connection === "close") {
