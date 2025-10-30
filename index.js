@@ -13,19 +13,16 @@ app.get("/", (req, res) => {
   res.send(`
     <h2>🤖 Bot de devoluciones activo</h2>
     <div id="qr-container">
-      ${lastQR ? `<img id="qr-image" src="${lastQR}" width="250" />` : "<p>Esperando código QR...</p>"}
+      <p>Esperando código QR...</p>
     </div>
     <p>Estado del bot: <span id="status">${connectionStatus}</span></p>
-
-    <p id="download-container">
-      ${lastQR ? `<a id="download-btn" href="${lastQR}" download="QR_WA.png">💾 Descargar QR</a>` : ""}
-    </p>
+    <p id="download-container"></p>
 
     <script>
       async function fetchQR() {
         try {
-          const qrResp = await fetch('/qr-status');
-          const data = await qrResp.json();
+          const resp = await fetch('/qr-status');
+          const data = await resp.json();
           const container = document.getElementById('qr-container');
           const statusElem = document.getElementById('status');
           const downloadContainer = document.getElementById('download-container');
@@ -44,7 +41,7 @@ app.get("/", (req, res) => {
         }
       }
 
-      setInterval(fetchQR, 3000); // actualiza cada 3 segundos
+      setInterval(fetchQR, 2000); // actualiza cada 2 segundos
       fetchQR();
     </script>
   `);
@@ -75,7 +72,7 @@ app.get("/status", (req, res) => {
   res.json({ status: connectionStatus, message });
 });
 
-// Endpoint /qr-status – QR + estado para actualizar la página
+// Endpoint /qr-status – QR + estado para la página dinámica
 app.get("/qr-status", (req, res) => {
   res.json({
     qr: lastQR,
