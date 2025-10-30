@@ -1,10 +1,6 @@
 import express from "express";
-import * as baileys from "@adiwajshing/baileys";
+import makeWASocket, { useMultiFileAuthState } from "@adiwajshing/baileys";
 import qrcode from "qrcode";
-
-const lib = baileys.default || baileys;
-const makeWASocket = lib.makeWASocket || lib.default?.makeWASocket;
-const useMultiFileAuthState = lib.useMultiFileAuthState || lib.default?.useMultiFileAuthState;
 
 const app = express();
 const PORT = process.env.PORT || 10000;
