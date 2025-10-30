@@ -6,7 +6,9 @@ const app = express();
 const PORT = process.env.PORT || 10000;
 
 let lastQR = null;
+let connectionStatus = "waiting_qr"; // "waiting_qr", "connected", "reconnecting"
 
+// Página principal (vista web del QR)
 app.get("/", (req, res) => {
   res.send(`
     <h2>🤖 Bot de devoluciones activo</h2>
@@ -23,8 +25,41 @@ app.get("/", (req, res) => {
   `);
 });
 
+// 🆕 Endpoint /qr → Devuelve solo la imagen PNG
+app.get("/qr", async (req, res) => {
+  if (!lastQR) {
+    res.status(404).send("Esperando código QR...");
+  } else {
+    const base64Data = lastQR.replace(/^data:image\\/png;base64,/, "");
+    const img = Buffer.from(base64Data, "base64");
+    res.writeHead(200, {
+      "Content-Type": "image/png",
+      "Content-Length": img.length
+    });
+    res.end(img);
+  }
+});
+
+// 🆕 Endpoint /status → Devuelve el estado actual del bot
+app.get("/status", (req, res) => {
+  let message;
+  if (connectionStatus === "connected") {
+    message = "✅ Bot conectado a WhatsApp";
+  } else if (connectionStatus === "reconnecting") {
+    message = "♻️ Intentando reconexión...";
+  } else {
+    message = "📱 Esperando que escanees el código QR";
+  }
+
+  res.json({
+    status: connectionStatus,
+    message
+  });
+});
+
 app.listen(PORT, () => console.log(`Servidor escuchando en puerto ${PORT}`));
 
+// 🚀 Inicializa la conexión con WhatsApp
 async function startBot() {
   console.log("Iniciando conexión con WhatsApp...");
 
@@ -41,15 +76,18 @@ async function startBot() {
 
     if (qr) {
       console.log("📱 Se generó un nuevo código QR");
+      connectionStatus = "waiting_qr";
       lastQR = await qrcode.toDataURL(qr);
-      console.log("🌐 URL QR:", lastQR.substring(0, 80) + "..."); // muestra parte del enlace
+      console.log("🌐 QR actualizado, visible en / y /qr");
     }
 
     if (connection === "close") {
       console.log("❌ Conexión cerrada, intentando reconectar...");
+      connectionStatus = "reconnecting";
       startBot();
     } else if (connection === "open") {
       console.log("✅ Conexión establecida con WhatsApp");
+      connectionStatus = "connected";
       lastQR = null;
     }
   });
