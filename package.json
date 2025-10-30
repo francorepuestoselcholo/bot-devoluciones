@@ -10,6 +10,7 @@
     "@adiwajshing/baileys": "latest",
     "express": "^4.18.2",
     "googleapis": "^133.0.0"
+	"qrcode": "^1.5.4"
   }
 }
 
