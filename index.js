@@ -6,26 +6,51 @@ const app = express();
 const PORT = process.env.PORT || 10000;
 
 let lastQR = null;
-let connectionStatus = "waiting_qr"; // "waiting_qr", "connected", "reconnecting"
+let connectionStatus = "waiting_qr"; // waiting_qr, connected, reconnecting
 
-// Página principal (vista web del QR)
+// Página principal con QR dinámico y botón de descarga
 app.get("/", (req, res) => {
   res.send(`
     <h2>🤖 Bot de devoluciones activo</h2>
-    ${
-      lastQR
-        ? `
-        <p>Escaneá este código QR para vincular WhatsApp:</p>
-        <img src="${lastQR}" width="250" />
-        <p><a href="${lastQR}" target="_blank">🔗 Abrir QR en nueva pestaña</a></p>
-      `
-        : "<p>Esperando código QR...</p>"
-    }
-    <meta http-equiv="refresh" content="10">
+    <div id="qr-container">
+      ${lastQR ? `<img id="qr-image" src="${lastQR}" width="250" />` : "<p>Esperando código QR...</p>"}
+    </div>
+    <p>Estado del bot: <span id="status">${connectionStatus}</span></p>
+
+    <p id="download-container">
+      ${lastQR ? `<a id="download-btn" href="${lastQR}" download="QR_WA.png">💾 Descargar QR</a>` : ""}
+    </p>
+
+    <script>
+      async function fetchQR() {
+        try {
+          const qrResp = await fetch('/qr-status');
+          const data = await qrResp.json();
+          const container = document.getElementById('qr-container');
+          const statusElem = document.getElementById('status');
+          const downloadContainer = document.getElementById('download-container');
+
+          statusElem.textContent = data.status;
+
+          if (data.qr) {
+            container.innerHTML = '<img id="qr-image" src="' + data.qr + '" width="250" />';
+            downloadContainer.innerHTML = '<a id="download-btn" href="' + data.qr + '" download="QR_WA.png">💾 Descargar QR</a>';
+          } else {
+            container.innerHTML = "<p>Esperando código QR...</p>";
+            downloadContainer.innerHTML = "";
+          }
+        } catch (err) {
+          console.error(err);
+        }
+      }
+
+      setInterval(fetchQR, 3000); // actualiza cada 3 segundos
+      fetchQR();
+    </script>
   `);
 });
 
-// 🆕 Endpoint /qr → Devuelve solo la imagen PNG
+// Endpoint /qr – devuelve la imagen PNG pura
 app.get("/qr", async (req, res) => {
   if (!lastQR) {
     res.status(404).send("Esperando código QR...");
@@ -40,26 +65,27 @@ app.get("/qr", async (req, res) => {
   }
 });
 
-// 🆕 Endpoint /status → Devuelve el estado actual del bot
+// Endpoint /status – devuelve JSON con estado
 app.get("/status", (req, res) => {
   let message;
-  if (connectionStatus === "connected") {
-    message = "✅ Bot conectado a WhatsApp";
-  } else if (connectionStatus === "reconnecting") {
-    message = "♻️ Intentando reconexión...";
-  } else {
-    message = "📱 Esperando que escanees el código QR";
-  }
+  if (connectionStatus === "connected") message = "✅ Bot conectado a WhatsApp";
+  else if (connectionStatus === "reconnecting") message = "♻️ Intentando reconexión...";
+  else message = "📱 Esperando que escanees el código QR";
 
+  res.json({ status: connectionStatus, message });
+});
+
+// Endpoint /qr-status – QR + estado para actualizar la página
+app.get("/qr-status", (req, res) => {
   res.json({
-    status: connectionStatus,
-    message
+    qr: lastQR,
+    status: connectionStatus
   });
 });
 
 app.listen(PORT, () => console.log(`Servidor escuchando en puerto ${PORT}`));
 
-// 🚀 Inicializa la conexión con WhatsApp
+// Inicialización del bot
 async function startBot() {
   console.log("Iniciando conexión con WhatsApp...");
 
@@ -78,13 +104,13 @@ async function startBot() {
       console.log("📱 Se generó un nuevo código QR");
       connectionStatus = "waiting_qr";
       lastQR = await qrcode.toDataURL(qr);
-      console.log("🌐 QR actualizado, visible en / y /qr");
+      console.log("🌐 QR actualizado – revisá /, /qr y el botón Descargar QR");
     }
 
     if (connection === "close") {
       console.log("❌ Conexión cerrada, intentando reconectar...");
       connectionStatus = "reconnecting";
-      startBot();
+      setTimeout(startBot, 5000); // Reconexión automática
     } else if (connection === "open") {
       console.log("✅ Conexión establecida con WhatsApp");
       connectionStatus = "connected";
