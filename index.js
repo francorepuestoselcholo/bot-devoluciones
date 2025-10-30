@@ -30,7 +30,7 @@ app.get("/qr", async (req, res) => {
   if (!lastQR) {
     res.status(404).send("Esperando código QR...");
   } else {
-    const base64Data = lastQR.replace(/^data:image\\/png;base64,/, "");
+    const base64Data = lastQR.replace(/^data:image\/png;base64,/, "");
     const img = Buffer.from(base64Data, "base64");
     res.writeHead(200, {
       "Content-Type": "image/png",
