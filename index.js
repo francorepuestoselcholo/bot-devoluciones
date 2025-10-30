@@ -1,7 +1,8 @@
 import express from "express";
-import pkg from "@adiwajshing/baileys";
+import baileys from "@adiwajshing/baileys";
 
-const { makeWASocket, useMultiFileAuthState } = pkg;
+const { default: makeWASocket, useMultiFileAuthState } = baileys;
+
 
 // --- Servidor web ---
 const app = express();
