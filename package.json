@@ -1,20 +1,15 @@
 {
-  "name": "bot-devoluciones",
+  "name": "repuestos-el-cholo-whatsapp-bot",
   "version": "1.0.0",
-  "description": "Bot de devoluciones con WhatsApp y Google Sheets",
+  "description": "WhatsApp Bot para gestión de devoluciones de Repuestos El Cholo.",
   "main": "index.js",
   "type": "module",
   "scripts": {
     "start": "node index.js"
   },
   "dependencies": {
-  "@whiskeysockets/baileys": "^3.0.0",
-  "express": "^4.18.2",
-  "googleapis": "^133.0.0",
-  "qrcode": "^1.5.4"
+    "@whiskeysockets/baileys": "6.6.0",
+    "express": "4.19.2",
+    "qrcode": "1.5.3"
+  }
 }
-
-}
-
-
-
