@@ -1,0 +1,8 @@
+# Ignorar carpetas de Node
+node_modules/
+
+# Ignorar archivos de sesión de Baileys
+auth_info/
+
+# Ignorar logs locales
+logs.txt
