@@ -1,6 +1,7 @@
 import express from "express";
 import { promises as fs } from "fs";
-import makeWASocket, { 
+import { // CORREGIDO: makeWASocket ahora se importa como un named export
+    makeWASocket, 
     useMultiFileAuthState, 
     fetchLatestBaileysVersion,
     DisconnectReason,
@@ -116,6 +117,7 @@ async function startBot() {
     
     console.log(`Versión de Baileys: ${version.join(".")}`);
 
+    // Línea 119 corregida: makeWASocket es una función válida aquí
     socket = makeWASocket({
         auth: state,
         logger: P({ level: "error" }), // Logger para reducir el ruido en consola
