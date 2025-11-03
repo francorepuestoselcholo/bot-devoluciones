@@ -1,7 +1,7 @@
 {
   "name": "repuestos-el-cholo-telegram-bot",
   "version": "1.0.0",
-  "description": "Telegram Bot para gestión de devoluciones de Repuestos El Cholo.",
+  "description": "Telegram Bot para gesti\u00f3n de devoluciones de Repuestos El Cholo.",
   "main": "index.js",
   "type": "module",
   "scripts": {
@@ -9,6 +9,9 @@
   },
   "dependencies": {
     "telegraf": "4.16.2",
-    "express": "4.19.2"
+    "express": "4.19.2",
+    "googleapis": "^133.0.0",
+    "pdfkit": "^0.14.0",
+    "axios": "^1.4.0"
   }
 }
