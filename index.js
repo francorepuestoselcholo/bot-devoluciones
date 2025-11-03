@@ -1,27 +1,23 @@
-import express from "express";
 import { promises as fs } from "fs";
-import { // CORREGIDO: makeWASocket ahora se importa como un named export
-    makeWASocket, 
-    useMultiFileAuthState, 
-    fetchLatestBaileysVersion,
-    DisconnectReason,
-    delay
-} from "@whiskeysockets/baileys";
-import qrcode from "qrcode";
-import P from "pino"; // Usamos pino para logs avanzados de Baileys
+import { Telegraf } from "telegraf";
+import express from "express";
 
-const app = express();
-const PORT = process.env.PORT || 3000;
+// --- CONFIGURACIÓN CRÍTICA ---
+// IMPORTANTE: REEMPLAZA estos valores o usa Variables de Entorno en Render.
+// 1. Token de tu bot obtenido de @BotFather
+const BOT_TOKEN = 8345998515:AAHRzidMwwPTDCpRuGSHsF35pCqRjWyZsZE; 
+// 2. ID de Chat del dueño (tu ID personal, para notificaciones). Úsalo con comillas.
+const OWNER_CHAT_ID = 8540609629; 
+
 const LOG_FILE = 'logs.txt';
+const PORT = process.env.PORT || 3000; 
 
-// Configuración del dueño del bot (¡DEBES CAMBIAR ESTO!)
-// Formato: 54911xxxxxxxx@s.whatsapp.net (incluye código de país y código de área)
-const OWNER_NUMBER_JID = "5492914193006@s.whatsapp.net";
+// Inicialización del bot
+const bot = new Telegraf(BOT_TOKEN);
 
-// Variables de estado global
-let lastQR = null;
-let status = "iniciando";
-let socket = null; // Referencia global al socket de Baileys
+// Inicialización de Express (para mantener el servicio de Render vivo)
+const app = express();
+let botStatus = "iniciando";
 
 /**
  * Función auxiliar para guardar logs en un archivo local.
@@ -37,9 +33,9 @@ async function appendLog(message) {
     }
 }
 
-// --- CONFIGURACIÓN DEL SERVIDOR EXPRESS ---
+// --- ENDPOINTS HTTP DE ESTADO (Para Render) ---
 
-// Endpoint: Página principal con estado y QR
+// Endpoint: Página principal con estado (no hay QR en Telegram)
 app.get("/", (req, res) => {
     res.send(`
         <!DOCTYPE html>
@@ -47,168 +43,86 @@ app.get("/", (req, res) => {
         <head>
             <meta charset="UTF-8">
             <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <title>Bot de Repuestos El Cholo</title>
+            <title>Bot de Repuestos El Cholo (Telegram)</title>
             <meta http-equiv="refresh" content="10">
             <style>
                 body { font-family: sans-serif; text-align: center; padding: 20px; background-color: #f7f7f7; }
                 .status-box { padding: 10px; border-radius: 8px; margin: 20px auto; max-width: 400px; }
-                .status-conectado { background-color: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
-                .status-qr { background-color: #fff3cd; color: #856404; border: 1px solid #ffeeba; }
-                .status-reconectando { background-color: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
-                img { border: 5px solid #fff; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
+                .status-active { background-color: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
             </style>
         </head>
         <body>
-            <h2>🤖 Bot de Devoluciones de Repuestos El Cholo</h2>
-            ${
-                status === "conectado"
-                ? `<div class="status-box status-conectado">✅ Estado: <b>Conectado</b>. Bot activo.</div>`
-                : status === "esperando_qr"
-                ? `<div class="status-box status-qr">⏳ Estado: <b>Esperando QR</b>. Escanee abajo.</div>`
-                : `<div class="status-box status-reconectando">❌ Estado: <b>${status}</b>. Intentando conectar...</div>`
-            }
-
-            ${
-                lastQR
-                ? `
-                    <p>Escaneá este código desde WhatsApp → **Dispositivos Vinculados**</p>
-                    <img src="${lastQR}" width="250" alt="Código QR de WhatsApp"/>
-                    <p><small>Esta página se actualizará automáticamente.</small></p>
-                `
-                : status !== "conectado" ? "<p>Esperando generación de código QR...</p>" : ""
-            }
+            <h2>🤖 Bot de Telegram de Repuestos El Cholo</h2>
+            <div class="status-box status-active">✅ Estado: <b>${botStatus}</b>. El bot está escuchando.</div>
+            <p>El bot de Telegram no necesita escanear QR.</p>
+            <p>Comprueba los logs de Render para ver la actividad del bot.</p>
         </body>
         </html>
     `);
 });
 
-// Endpoint: Devuelve solo la imagen del QR
-app.get("/qr", (req, res) => {
-    if (!lastQR) {
-        return res.status(404).send("QR no disponible todavía");
-    }
-    // La expresión regular /^data:image\/png;base64,/ es segura y correcta para este caso.
-    const base64Data = lastQR.replace(/^data:image\/png;base64,/, "");
-    const img = Buffer.from(base64Data, "base64");
-    res.writeHead(200, {
-        "Content-Type": "image/png",
-        "Content-Length": img.length,
-    });
-    res.end(img);
-});
-
 // Endpoint: Estado en formato JSON
 app.get("/status", (req, res) => {
-    res.json({ status });
+    res.json({ status: botStatus });
 });
 
+// Iniciar servidor Express
 app.listen(PORT, () =>
-    console.log(`✅ Servidor Express escuchando en http://localhost:${PORT} (o puerto ${PORT} de Render)`)
+    console.log(`✅ Servidor Express escuchando en puerto ${PORT}`)
 );
 
-// --- LÓGICA DEL BOT DE WHATSAPP CON BAILEYS ---
+// --- LÓGICA DEL BOT DE TELEGRAM ---
 
-async function startBot() {
-    console.log("\nIniciando conexión con WhatsApp (Repuestos El Cholo)...");
+// 1. Manejo del comando /start o mensaje "hola"
+bot.start((ctx) => {
+    const welcomeMessage = "👋 Hola, soy el asistente de devoluciones de Repuestos El Cholo. ¿En qué puedo ayudarte?";
+    ctx.reply(welcomeMessage);
+    console.log(`[BOT] Respuesta de bienvenida enviada a chat ${ctx.chat.id}`);
+});
 
-    // 1. Manejo de estado de autenticación (persistencia)
-    const { state, saveCreds } = await useMultiFileAuthState("./auth_info");
-    const { version } = await fetchLatestBaileysVersion();
+// 2. Manejo de la palabra clave "devolución"
+bot.hears(['devolucion', 'devolución'], (ctx) => {
+    const returnInstructions = "📦 Para iniciar una devolución, por favor envíanos una foto del repuesto y el número de factura.";
+    ctx.reply(returnInstructions);
+    console.log(`[BOT] Instrucciones de devolución enviadas a chat ${ctx.chat.id}`);
+});
+
+// 3. Manejo de cualquier otro mensaje (el core del bot)
+bot.on('text', async (ctx) => {
+    const message = ctx.message.text;
+    const chatId = ctx.chat.id;
+    const sender = ctx.from.first_name || 'Cliente';
+
+    console.log(`[MSG] Recibido de ${sender} (${chatId}): "${message.substring(0, 30)}..."`);
     
-    console.log(`Versión de Baileys: ${version.join(".")}`);
+    // a) Guardar log del mensaje
+    await appendLog(`Mensaje recibido de ${sender} (${chatId}): "${message}"`);
 
-    // Línea 119 corregida: makeWASocket es una función válida aquí
-    socket = makeWASocket({
-        auth: state,
-        logger: P({ level: "error" }), // Logger para reducir el ruido en consola
-        printQRInTerminal: false, // El QR se muestra en la web
-        browser: ["Repuestos El Cholo Bot", "Chrome", "22.04.4"],
-        version,
-        shouldSyncHistory: (c) => true, // Sincronizar historial para mejor UX
-    });
-
-    // 2. Evento para guardar credenciales (sesión)
-    socket.ev.on("creds.update", saveCreds);
-
-    // 3. Evento de conexión y reconexión
-    socket.ev.on("connection.update", (update) => {
-        const { connection, lastDisconnect, qr } = update;
-
-        if (qr) {
-            console.log("📱 Se generó un nuevo código QR. Escanealo en la web.");
-            status = "esperando_qr";
-            // Generar el Data URL del QR para mostrarlo en la web
-            qrcode.toDataURL(qr)
-                .then(url => {
-                    lastQR = url;
-                })
-                .catch(err => console.error("Error al generar QR:", err));
-        }
-
-        if (connection === "close") {
-            const shouldReconnect = (lastDisconnect.error?.output?.statusCode !== DisconnectReason.loggedOut);
-            
-            console.log("❌ Conexión cerrada. Razón:", lastDisconnect.error?.output?.statusCode, shouldReconnect ? 'Intentando reconectar...' : 'Sesión cerrada, elimine auth_info y reinicie.');
-            appendLog(`Conexión cerrada. Razón: ${lastDisconnect.error?.output?.statusCode}. Reintentando: ${shouldReconnect}`);
-            
-            if (shouldReconnect) {
-                status = "reconectando";
-                // Espera un momento antes de reintentar para evitar spam
-                delay(5000); 
-                startBot();
-            } else {
-                status = "desconectado_permanente";
-                lastQR = null;
-            }
-
-        } else if (connection === "open") {
-            console.log("✅ Conectado correctamente a WhatsApp. Bot de Repuestos El Cholo activo.");
-            status = "conectado";
-            lastQR = null; // Limpiar QR una vez conectado
-        }
-    });
-    
-    // 4. Lógica de mensajes del bot
-    socket.ev.on('messages.upsert', async ({ messages }) => {
-        const m = messages[0];
-        
-        // Ignorar mensajes sin contenido, de estado o del bot mismo.
-        if (!m.message || m.key.fromMe || m.key.remoteJid === 'status@broadcast') return;
-
-        const from = m.key.remoteJid;
-        const text = m.message.conversation || m.message.extendedTextMessage?.text || '';
-        const lowerText = text.toLowerCase().trim();
-
-        console.log(`[MSG] Recibido de ${from}: "${text.substring(0, 30)}..."`);
-        
-        // a) Guardar log del mensaje
-        await appendLog(`Mensaje recibido de ${from}: "${text}"`);
-        
-        // b) Respuestas automáticas
-        let responseText = '';
-
-        if (lowerText === 'hola') {
-            responseText = '👋 Hola, soy el asistente de devoluciones de Repuestos El Cholo. ¿En qué puedo ayudarte?';
-        } else if (lowerText.includes('devolución') || lowerText.includes('devolucion')) {
-            responseText = '📦 Para iniciar una devolución, por favor envíanos una foto del repuesto y el número de factura.';
-        }
-
-        if (responseText) {
-            await socket.sendMessage(from, { text: responseText });
-            console.log(`[BOT] Respuesta enviada a ${from}.`);
-        }
-
-        // c) Notificación al dueño
-        if (OWNER_NUMBER_JID && from !== OWNER_NUMBER_JID) {
-            await socket.sendMessage(OWNER_NUMBER_JID, { 
-                text: `🔔 *Nuevo Mensaje de Cliente*\n\nDe: ${from}\nMensaje: "${text}"` 
-            });
+    // b) Notificación al dueño
+    if (OWNER_CHAT_ID && String(chatId) !== OWNER_CHAT_ID) {
+        const notificationText = `🔔 *Nuevo Mensaje de Cliente (Telegram)*\n\nDe: ${sender} (ID: \`${chatId}\`)\nMensaje: "${message}"`;
+        try {
+            // Usamos `bot.telegram.sendMessage` para enviar al ID del dueño
+            await bot.telegram.sendMessage(OWNER_CHAT_ID, notificationText, { parse_mode: 'Markdown' });
             console.log(`[NOTIF] Notificación enviada al dueño.`);
+        } catch (e) {
+            console.error('Error al enviar notificación al dueño. Verifica el OWNER_CHAT_ID.', e.message);
         }
-    });
+    }
+});
 
-    return socket;
+
+// 4. Iniciar el bot y el Long Polling (método de conexión de Telegraf)
+async function startTelegramBot() {
+    try {
+        await bot.launch();
+        botStatus = "conectado";
+        console.log("✅ Bot de Telegram (Repuestos El Cholo) iniciado. Escuchando mensajes...");
+    } catch (error) {
+        botStatus = "error";
+        console.error("❌ Error al iniciar el bot de Telegram:", error.message);
+    }
 }
 
-// Iniciar el bot
-startBot();
+// Iniciar el bot de Telegram
+startTelegramBot();
