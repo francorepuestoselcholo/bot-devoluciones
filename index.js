@@ -2,14 +2,21 @@ import { promises as fs } from "fs";
 import { Telegraf } from "telegraf";
 import express from "express";
 
-// --- CONFIGURACIÓN CRÍTICA ---
-// IMPORTANTE: REEMPLAZA estos valores o usa Variables de Entorno en Render.
-// 1. Token de tu bot obtenido de @BotFather
-const BOT_TOKEN = 8345998515:AAHRzidMwwPTDCpRuGSHsF35pCqRjWyZsZE; 
-// 2. ID de Chat del dueño (tu ID personal, para notificaciones). Úsalo con comillas.
-const OWNER_CHAT_ID = 8540609629; 
+// --- CONFIGURACIÓN CRÍTICA: LECTURA DE VARIABLES DE ENTORNO ---
+// Render inyectará estos valores automáticamente.
+const BOT_TOKEN = process.env.BOT_TOKEN; 
+const OWNER_CHAT_ID = process.env.OWNER_CHAT_ID; 
+
+// Verificación obligatoria de credenciales
+if (!BOT_TOKEN) {
+    throw new Error("FATAL: BOT_TOKEN no está definido en las variables de entorno.");
+}
+if (!OWNER_CHAT_ID) {
+    console.warn("ADVERTENCIA: OWNER_CHAT_ID no está definido. El bot funcionará, pero no enviará notificaciones al dueño.");
+}
 
 const LOG_FILE = 'logs.txt';
+// Usamos process.env.PORT, que Render define automáticamente
 const PORT = process.env.PORT || 3000; 
 
 // Inicialización del bot
@@ -27,6 +34,8 @@ async function appendLog(message) {
     const timestamp = new Date().toISOString();
     const logEntry = `[${timestamp}] ${message}\n`;
     try {
+        // En Render, los archivos persistirán temporalmente en el disco,
+        // pero se borrarán en el próximo despliegue, lo cual es típico para logs.
         await fs.appendFile(LOG_FILE, logEntry, 'utf8');
     } catch (e) {
         console.error('Error al guardar log:', e);
