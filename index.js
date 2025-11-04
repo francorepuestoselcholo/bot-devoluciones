@@ -52,12 +52,14 @@ const remitenteKeyboard = Markup.inlineKeyboard([
   [Markup.button.callback('3️⃣ Tejada Carlos y Gomez Juan S.H. (CUIT: 30709969699)', 'remitente_Tejada')],
   [Markup.button.callback('↩️ Volver', 'main')]
 ]);
+// Se agrega la opción `resize_keyboard: true` que solo aplica a Teclados de Respuesta
 const mainKeyboard = Markup.inlineKeyboard([
   [Markup.button.callback('📦 Registrar devolución', 'registro')],
   [Markup.button.callback('🔍 Consultar devoluciones', 'consultar')],
   [Markup.button.callback('📋 Ver estado', 'ver_estado'), Markup.button.callback('🏢 Ver proveedores', 'ver_proveedores')],
   [Markup.button.callback('➕ Agregar proveedor', 'agregar_proveedor')]
 ]);
+
 
 // --- Google Sheets ---
 let sheetsClient = null;
@@ -237,17 +239,25 @@ async function generateTicketPDF(data) {
 }
 
 // --- Flows/keyboards ---
+
+// Función central para enviar el menú, ahora usa el método `reply` para mayor compatibilidad
 const replyMain = async (ctx) => { 
   ctx.session = {}; // Resetear sesión
   ctx.session.step = 'main_menu'; // Establecer un estado inicial seguro
-  return ctx.reply("Menú principal:", mainKeyboard.reply_markup); 
+  // Uso explícito de `reply` con las opciones del teclado
+  return ctx.reply("Menú principal:", {
+    reply_markup: mainKeyboard.reply_markup
+  });
 };
 
 bot.start(async (ctx) => {
   ctx.session = {};
   ctx.session.step = 'main_menu'; // Establecer un estado inicial seguro
   await appendLog(`Comienzo /start chat ${ctx.chat.id}`);
-  await ctx.reply("👋 Hola! Soy el bot de devoluciones. ¿Qué querés hacer?", mainKeyboard.reply_markup);
+  // Usamos `ctx.reply` con las opciones del teclado.
+  await ctx.reply("👋 Hola! Soy el bot de devoluciones. ¿Qué querés hacer?", {
+    reply_markup: mainKeyboard.reply_markup
+  });
 });
 
 // Nuevo Handler: Comando /help (solicitado)
@@ -258,6 +268,7 @@ bot.command('help', async (ctx) => {
 
 bot.action('main', async (ctx)=>{ 
   try{ await ctx.answerCbQuery(); } catch(e){} 
+  // Al volver al menú principal desde una acción, usamos `replyMain` que siempre envía un mensaje nuevo
   await replyMain(ctx); 
 });
 
@@ -265,6 +276,7 @@ bot.action('registro', async (ctx)=>{
   try{ await ctx.answerCbQuery(); } catch(e){} 
   ctx.session.flow='registro'; 
   ctx.session.step='chooseRemitente'; 
+  // Usamos `editMessageText` ya que es una acción, no un mensaje nuevo
   await ctx.editMessageText("¿A qué empresa corresponde la devolución?", remitenteKeyboard.reply_markup); 
 });
 
@@ -461,7 +473,7 @@ Fecha factura: ${ctx.session.fechaFactura}
   }
 
   // Fallback si no está en un flujo y Gemini no respondió o no está configurado
-  await ctx.reply("No entendí eso — elegí una opción:", mainKeyboard.reply_markup);
+  await ctx.reply("No entendí eso. Por favor, usá los botones del menú principal, que están *debajo* del último mensaje que te envié, o escribí /start.", mainKeyboard.reply_markup);
 });
 
 bot.action('confirm_save', async (ctx)=>{
