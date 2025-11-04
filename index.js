@@ -52,7 +52,6 @@ const remitenteKeyboard = Markup.inlineKeyboard([
   [Markup.button.callback('3️⃣ Tejada Carlos y Gomez Juan S.H. (CUIT: 30709969699)', 'remitente_Tejada')],
   [Markup.button.callback('↩️ Volver', 'main')]
 ]);
-// Se agrega la opción `resize_keyboard: true` que solo aplica a Teclados de Respuesta
 const mainKeyboard = Markup.inlineKeyboard([
   [Markup.button.callback('📦 Registrar devolución', 'registro')],
   [Markup.button.callback('🔍 Consultar devoluciones', 'consultar')],
@@ -273,11 +272,19 @@ bot.action('main', async (ctx)=>{
 });
 
 bot.action('registro', async (ctx)=>{ 
-  try{ await ctx.answerCbQuery(); } catch(e){} 
+  try{ 
+    // Siempre intentamos responder a la consulta de callback para evitar el estado de "cargando"
+    await ctx.answerCbQuery(); 
+  } catch(e){} 
+  
   ctx.session.flow='registro'; 
   ctx.session.step='chooseRemitente'; 
-  // Usamos `editMessageText` ya que es una acción, no un mensaje nuevo
-  await ctx.editMessageText("¿A qué empresa corresponde la devolución?", remitenteKeyboard.reply_markup); 
+  
+  // *** CAMBIO CRÍTICO: Usamos ctx.reply en lugar de ctx.editMessageText ***
+  // Esto envía un mensaje nuevo, asegurando que el teclado de empresas aparezca.
+  await ctx.reply("¿A qué empresa corresponde la devolución?", { 
+      reply_markup: remitenteKeyboard.reply_markup 
+  }); 
 });
 
 bot.action(/remitente_(.+)/, async (ctx)=>{
@@ -288,6 +295,7 @@ bot.action(/remitente_(.+)/, async (ctx)=>{
   
   const provs = await readProviders(); // Lee proveedores (maneja si Sheets no está inicializado)
   let buttons = [];
+  // Solo mostramos los primeros 10 proveedores
   (provs.slice(0,10)).forEach((p,i)=> buttons.push([Markup.button.callback(`${i+1}. ${p}`, `prov_${i}`)]));
   
   buttons.push([Markup.button.callback('Escribir otro proveedor', 'prov_other')]);
@@ -300,6 +308,7 @@ bot.action(/remitente_(.+)/, async (ctx)=>{
     return ctx.editMessageText(msg, { parse_mode: 'Markdown' });
   }
 
+  // Aquí sí podemos usar editMessageText porque estamos en una acción de callback.
   await ctx.editMessageText(msg, { 
     parse_mode: 'Markdown', 
     reply_markup: Markup.inlineKeyboard(buttons).reply_markup 
