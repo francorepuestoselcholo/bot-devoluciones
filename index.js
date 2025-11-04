@@ -419,18 +419,44 @@ Fecha factura: ${ctx.session.fechaFactura}
   // fallback: Gemini AI
   if (GEMINI_API_KEY) {
     try {
-      const aiResp = await axios.post("https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateText?key=" + GEMINI_API_KEY, {
-        "prompt": text,
-        "maxOutputTokens": 256
-      });
-      const reply = aiResp.data?.candidates?.[0]?.output || "Perdón, no entendí. Podés usar el menú.";
+      // Usamos gemini-2.5-flash-preview-09-2025 para mayor estabilidad
+      const payload = {
+          contents: [{ parts: [{ text: text }] }],
+          // Añadimos un systemInstruction para darle contexto de bot de repuestos
+          systemInstruction: {
+              parts: [{ text: "Eres un asistente amigable y formal que responde preguntas generales, pero siempre sugiere usar el menú principal para las funciones del bot de devoluciones de Repuestos El Cholo." }]
+          },
+          config: {
+            maxOutputTokens: 256
+          }
+      };
+
+      const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${GEMINI_API_KEY}`;
+
+      const aiResp = await axios.post(apiUrl, payload);
+
+      const reply = aiResp.data?.candidates?.[0]?.content?.parts?.[0]?.text || "Perdón, no entendí. Podés usar el menú.";
       
-      // FIX APLICADO: Incluir el mainKeyboard en la respuesta del fallback de Gemini
       await ctx.reply(reply, mainKeyboard.reply_markup); 
       
       return;
     } catch (e) {
-      console.error("Error Gemini:", e.message);
+      console.error("--- Error en la llamada a Gemini ---");
+      if (e.response) {
+        // El servidor respondió con un código de estado fuera de 2xx
+        console.error(`Error Gemini: Status ${e.response.status}. Data:`, e.response.data);
+        // Si el status es 400, la data debería decir si es por API key o estructura de payload.
+        await ctx.reply("⚠️ Error de API: No pude procesar tu solicitud con el asistente (código 400). Por favor, revisá la consola para el detalle del error.", mainKeyboard.reply_markup);
+      } else if (e.request) {
+        // La solicitud fue hecha pero no hubo respuesta
+        console.error("Error Gemini: No se recibió respuesta del servidor.", e.message);
+        await ctx.reply("⚠️ Error de red: No pude contactar al asistente. Revisa la conexión.", mainKeyboard.reply_markup);
+      } else {
+        // Otros errores (ej. configuración de Axios)
+        console.error("Error Gemini:", e.message);
+        await ctx.reply("⚠️ Error interno del asistente. Revisa la consola.", mainKeyboard.reply_markup);
+      }
+      return;
     }
   }
 
