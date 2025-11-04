@@ -13,9 +13,8 @@ const OWNER_CHAT_ID = process.env.OWNER_CHAT_ID || null;
 // ID de la hoja de cálculo
 const SHEET_ID = process.env.GOOGLE_SHEET_ID || "1BFGsZaUwvxV4IbGgXNOp5IrMYLVn-czVYpdxTleOBgo"; // ID de ejemplo
 
-// Credenciales de Google Sheets
-const GOOGLE_CREDENTIALS_JSON_ENV = process.env.GOOGLE_CREDENTIALS_JSON || null; 
-const GOOGLE_SERVICE_ACCOUNT_FILE = "./gen-lang-client-0104843305-b3e3d726d218.json"; // Ruta de fallback si se sube como archivo
+// Credenciales: SE ESPERA QUE ESTE ARCHIVO ESTÉ EN EL DISCO (subido como Secret File)
+const GOOGLE_SERVICE_ACCOUNT_FILE = "./gen-lang-client-0104843305-b3e3d726d218.json"; 
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || null;
 const LOG_FILE = "logs.txt";
@@ -69,16 +68,10 @@ async function initSheets() {
   let key;
   
   try {
-      // 1. Intenta leer la variable de entorno JSON (Método más robusto para Secrets)
-      if (GOOGLE_CREDENTIALS_JSON_ENV) {
-          console.log("Intentando leer credenciales desde GOOGLE_CREDENTIALS_JSON...");
-          key = JSON.parse(GOOGLE_CREDENTIALS_JSON_ENV);
-      } else {
-          // 2. Intenta leer el archivo local (Fallback para Secret File)
-          console.log("Intentando leer credenciales desde archivo local...");
-          const keyFileContent = await fs.readFile(GOOGLE_SERVICE_ACCOUNT_FILE, "utf8");
-          key = JSON.parse(keyFileContent);
-      }
+      // Intenta leer el archivo local (Asumimos que el Secret File o el archivo estático están disponibles)
+      console.log("Intentando leer credenciales desde archivo local...");
+      const keyFileContent = await fs.readFile(GOOGLE_SERVICE_ACCOUNT_FILE, "utf8");
+      key = JSON.parse(keyFileContent);
 
       if (!key || !key.client_email || !key.private_key) {
           throw new Error("Credenciales JSON incompletas o mal formadas.");
@@ -95,7 +88,7 @@ async function initSheets() {
       console.log("✅ Google Sheets inicializado correctamente.");
   } catch (e) {
     // Si falla, solo advertir y deshabilitar Sheets. NO FALLAR LA INSTANCIA.
-    console.warn(`⚠️ Error CRÍTICO al inicializar Google Sheets. Funcionalidad DESHABILITADA: ${e.message}`);
+    console.warn(`⚠️ Error CRÍTICO al inicializar Google Sheets. Funcionalidad DESHABILITADA (Archivo ${GOOGLE_SERVICE_ACCOUNT_FILE} no encontrado o inválido): ${e.message}`);
     sheetsInitialized = false;
     sheetsClient = null;
   }
@@ -186,12 +179,12 @@ async function generateTicketPDF(data) {
 
       // logo
       try {
-        // La lectura del logo debe ser tolerante a fallos, pero el archivo debe existir.
+        // LECTURA DEL LOGO: ESTO ES CRÍTICO. DEBE ESTAR SUBIDO.
         const logo = await fs.readFile(LOGO_PATH);
         doc.image(logo, 40, 40, { width: 120 });
       } catch(e){
-        // Si el logo falla (el archivo no existe), se usa texto como fallback
-        console.warn(`Advertencia: No se pudo cargar el logo en ${LOGO_PATH}. Asegurate de que el archivo esté subido.`);
+        // Si el logo falla, no fallamos todo el PDF, solo usamos texto como fallback
+        console.warn(`Advertencia: No se pudo cargar el logo en ${LOGO_PATH}. Asegúrate de que el archivo esté subido: ${e.message}`);
         doc.fillColor(RED).fontSize(10).text("REPUESTOS EL CHOLO (Logo Faltante)", 40, 40);
       }
 
@@ -349,7 +342,7 @@ bot.action('ver_proveedores', async (ctx)=>{
 
 bot.action('ver_estado', async (ctx)=>{ 
   try{ await ctx.answerCbQuery(); } catch(e){} 
-  let sheetsStatus = sheetsInitialized ? "✅ Habilitada" : "❌ Deshabilitada (Error de credenciales)";
+  let sheetsStatus = sheetsInitialized ? "✅ Habilitada" : `❌ Deshabilitada (Archivo de credenciales ${GOOGLE_SERVICE_ACCOUNT_FILE} no encontrado)`;
   await ctx.reply(`Estado del bot: ${botStatus}\nIntegración con Sheets: ${sheetsStatus}`); 
 });
 
@@ -470,10 +463,11 @@ bot.action('confirm_save', async (ctx)=>{
 
   } catch(e) {
     console.error("Error generando/enviando PDF:", e.message);
-    // Nota: El PDF falló, pero el registro de Sheets podría haber funcionado.
-    if (sheetsError) {
-        // Solo enviamos el mensaje de error general si Sheets *también* falló.
+    // Solo enviamos un mensaje adicional de error si Sheets *también* falló. Si Sheets funcionó, solo el PDF falló, que ya está registrado.
+    if (sheetsError || !sheetsInitialized) {
         await ctx.reply("❌ Error al generar el ticket PDF. Avisá al administrador.");
+    } else {
+        await ctx.reply("⚠️ Atención: Error al generar el ticket PDF. La devolución fue registrada en Google Sheets, pero el ticket no pudo generarse.");
     }
   }
 
