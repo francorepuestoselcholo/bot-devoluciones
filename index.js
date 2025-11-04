@@ -1,6 +1,6 @@
 import { promises as fs } from "fs";
 import express from "express";
-// Cambiamos la importación: Eliminamos 'session' nativo.
+// Importación corregida: Eliminamos 'session' nativo de Telegraf.
 import { Telegraf, Markup } from "telegraf"; 
 import LocalSession from 'telegraf-session-local'; // <-- Nuevo import para sesión
 import PDFDocument from "pdfkit";
@@ -198,17 +198,26 @@ bot.start(async (ctx) => {
   await ctx.reply("👋 Hola! Soy el bot de devoluciones. ¿Qué querés hacer?", mainKeyboard);
 });
 
-// 📌 Nuevo Handler: Comando /help
+// 📌 Nuevo Handler: Comando /help (solicitado)
 bot.command('help', async (ctx) => {
   await ctx.reply("Soy el Bot de Devoluciones de Repuestos El Cholo. Solo respondo a los comandos y botones del menú.\n\nComandos:\n/start - Muestra el menú principal.\n/help - Muestra esta ayuda.\n\nPara interactuar, usá los botones del Menú Principal.", mainKeyboard);
 });
 
 
-bot.action('main', async (ctx)=>{ await ctx.answerCbQuery(); await replyMain(ctx); });
-bot.action('registro', async (ctx)=>{ await ctx.answerCbQuery(); ctx.session.flow='registro'; ctx.session.step='chooseRemitente'; await ctx.editMessageText("¿A qué empresa corresponde la devolución?", remitenteKeyboard); });
+bot.action('main', async (ctx)=>{ 
+  try{ await ctx.answerCbQuery(); } catch(e){} // 🛑 FIX: Añadir try/catch para evitar crash por timeout
+  await replyMain(ctx); 
+});
+
+bot.action('registro', async (ctx)=>{ 
+  try{ await ctx.answerCbQuery(); } catch(e){} // 🛑 FIX: Añadir try/catch para evitar crash por timeout
+  ctx.session.flow='registro'; 
+  ctx.session.step='chooseRemitente'; 
+  await ctx.editMessageText("¿A qué empresa corresponde la devolución?", remitenteKeyboard); 
+});
 
 bot.action(/remitente_(.+)/, async (ctx)=>{
-  await ctx.answerCbQuery();
+  try{ await ctx.answerCbQuery(); } catch(e){} // 🛑 FIX: Añadir try/catch para evitar crash por timeout
   const remitente = ctx.match[1];
   ctx.session.remitente = remitente;
   ctx.session.step = 'chooseProveedor';
@@ -222,7 +231,7 @@ bot.action(/remitente_(.+)/, async (ctx)=>{
 });
 
 bot.action(/prov_(\d+)/, async (ctx)=>{
-  await ctx.answerCbQuery();
+  try{ await ctx.answerCbQuery(); } catch(e){} // 🛑 FIX: Añadir try/catch para evitar crash por timeout
   const idx = Number(ctx.match[1]);
   const prov = ctx.session.provList?.[idx];
   ctx.session.proveedor = prov || 'N/D';
@@ -230,12 +239,23 @@ bot.action(/prov_(\d+)/, async (ctx)=>{
   await ctx.editMessageText(`Proveedor seleccionado: *${ctx.session.proveedor}*.\nEnviá el *código del producto* (texto).`, { parse_mode: 'Markdown' });
 });
 
-bot.action('prov_other', async (ctx)=>{ await ctx.answerCbQuery(); ctx.session.step='proveedor_manual'; await ctx.editMessageText("Escribí el nombre del proveedor (texto)."); });
+bot.action('prov_other', async (ctx)=>{ 
+  try{ await ctx.answerCbQuery(); } catch(e){} // 🛑 FIX: Añadir try/catch para evitar crash por timeout
+  ctx.session.step='proveedor_manual'; 
+  await ctx.editMessageText("Escribí el nombre del proveedor (texto)."); 
+});
 
-bot.action('agregar_proveedor', async (ctx)=>{ await ctx.answerCbQuery(); ctx.session.flow='agregar_proveedor'; ctx.session.step='nuevo_proveedor'; await ctx.editMessageText("Escribí el *nombre del proveedor* que querés agregar:", { parse_mode: 'Markdown' }); });
+bot.action('agregar_proveedor', async (ctx)=>{ 
+  try{ await ctx.answerCbQuery(); } catch(e){} // 🛑 FIX: Añadir try/catch para evitar crash por timeout
+  ctx.session.flow='agregar_proveedor'; 
+  ctx.session.step='nuevo_proveedor'; 
+  await ctx.editMessageText("Escribí el *nombre del proveedor* que querés agregar:", { parse_mode: 'Markdown' }); 
+});
 
 bot.action('consultar', async (ctx)=>{
-  await ctx.answerCbQuery();
+  // 🛑 FIX: Usamos try/catch con advertencia ya que este handler hace I/O pesada (Sheets)
+  try { await ctx.answerCbQuery(); } catch(e) { console.warn("Callback query timed out (consultar).", e.message); }
+  
   await ctx.reply("Buscando últimas devoluciones (las últimas 5 de cada remitente). Esto puede tardar un segundo...");
   const tabs = ["ElCholo","Ramirez","Tejada"];
   let messages = [];
@@ -250,9 +270,18 @@ bot.action('consultar', async (ctx)=>{
   else await ctx.reply(messages.join("\n\n"), { parse_mode: 'Markdown' });
 });
 
-bot.action('ver_proveedores', async (ctx)=>{ await ctx.answerCbQuery(); const provs = await readProviders(); if (!provs.length) return ctx.reply("No hay proveedores cargados."); const formatted = provs.map((p,i)=> `${i+1}. ${p}`).join("\n"); await ctx.reply(`Proveedores:\n${formatted}`); });
+bot.action('ver_proveedores', async (ctx)=>{ 
+  try{ await ctx.answerCbQuery(); } catch(e){} // 🛑 FIX: Añadir try/catch para evitar crash por timeout
+  const provs = await readProviders(); 
+  if (!provs.length) return ctx.reply("No hay proveedores cargados."); 
+  const formatted = provs.map((p,i)=> `${i+1}. ${p}`).join("\n"); 
+  await ctx.reply(`Proveedores:\n${formatted}`); 
+});
 
-bot.action('ver_estado', async (ctx)=>{ await ctx.answerCbQuery(); await ctx.reply(`Estado del bot: ${botStatus}`); });
+bot.action('ver_estado', async (ctx)=>{ 
+  try{ await ctx.answerCbQuery(); } catch(e){} // 🛑 FIX: Añadir try/catch para evitar crash por timeout
+  await ctx.reply(`Estado del bot: ${botStatus}`); 
+});
 
 bot.on('text', async (ctx)=>{
   const text = ctx.message.text?.trim();
@@ -314,7 +343,9 @@ Fecha factura: ${ctx.session.fechaFactura}
 });
 
 bot.action('confirm_save', async (ctx)=>{
-  await ctx.answerCbQuery();
+  // 🛑 FIX: Usamos try/catch con advertencia ya que este handler hace I/O pesada (Sheets, PDF)
+  try { await ctx.answerCbQuery(); } catch(e) { console.warn("Callback query timed out (confirm_save).", e.message); }
+  
   const s = ctx.session;
   if (!s || !s.remitente) return ctx.reply("No hay datos para guardar. Volvé al menú.", mainKeyboard);
   const tab = s.remitente;
