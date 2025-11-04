@@ -14,7 +14,7 @@ const OWNER_CHAT_ID = process.env.OWNER_CHAT_ID || null;
 const SHEET_ID = process.env.GOOGLE_SHEET_ID || "1BFGsZaUwvxV4IbGgXNOp5IrMYLVn-czVYpdxTleOBgo"; // ID de ejemplo
 
 // Credenciales: SE ESPERA QUE ESTE ARCHIVO ESTÉ EN EL DISCO (subido como Secret File)
-const GOOGLE_SERVICE_ACCOUNT_FILE = "./gen-lang-client-0104843305-3b7345de7ec0.json"; 
+const GOOGLE_SERVICE_ACCOUNT_FILE = "./gen-lang-client-0104843305-b3e3d726d218.json"; 
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || null;
 const LOG_FILE = "logs.txt";
@@ -422,7 +422,10 @@ Fecha factura: ${ctx.session.fechaFactura}
         "maxOutputTokens": 256
       });
       const reply = aiResp.data?.candidates?.[0]?.output || "Perdón, no entendí. Podés usar el menú.";
-      await ctx.reply(reply);
+      
+      // FIX APLICADO: Incluir el mainKeyboard en la respuesta del fallback de Gemini
+      await ctx.reply(reply, mainKeyboard.reply_markup); 
+      
       return;
     } catch (e) {
       console.error("Error Gemini:", e.message);
