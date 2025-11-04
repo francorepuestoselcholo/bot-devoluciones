@@ -9,12 +9,18 @@ import axios from "axios";
 // --- CONFIG/ENV ---
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const OWNER_CHAT_ID = process.env.OWNER_CHAT_ID || null;
-const SHEET_ID = process.env.GOOGLE_SHEET_ID || "1BFGsZaUwvxV4IbCgXNOp5IrMYLVn-czVYpdxTleOBgo";
-const GOOGLE_SERVICE_ACCOUNT_FILE = process.env.GOOGLE_SERVICE_ACCOUNT_FILE || "./gen-lang-client-0104843305-b3e3d726d218.json";
+
+// ID de la hoja de cálculo
+const SHEET_ID = process.env.GOOGLE_SHEET_ID || "1BFGsZaUwvxV4IbGgXNOp5IrMYLVn-czVYpdxTleOBgo"; // ID de ejemplo
+
+// Credenciales de Google Sheets
+const GOOGLE_CREDENTIALS_JSON_ENV = process.env.GOOGLE_CREDENTIALS_JSON || null; 
+const GOOGLE_SERVICE_ACCOUNT_FILE = "./gen-lang-client-0104843305-b3e3d726d218.json"; // Ruta de fallback si se sube como archivo
+
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || null;
 const LOG_FILE = "logs.txt";
 const PORT = process.env.PORT || 3000;
-const LOGO_PATH = "./REPUESTOS EL CHOLO LOGO.png";
+const LOGO_PATH = "./REPUESTOS EL CHOLO LOGO.png"; // RUTA DEL LOGO (DEBE ESTAR SUBIDO)
 
 if (!BOT_TOKEN) throw new Error("FATAL: BOT_TOKEN no definido en variables de entorno.");
 
@@ -30,7 +36,7 @@ app.listen(PORT, () => console.log(`Express escuchando en ${PORT}`));
 // --- Bot ---
 const bot = new Telegraf(BOT_TOKEN);
 
-// FIX: Middleware de sesión con persistencia
+// Middleware de sesión con persistencia
 bot.use(
   (new LocalSession({ 
     database: 'session_db.json' 
@@ -52,53 +58,89 @@ const mainKeyboard = Markup.inlineKeyboard([
 
 // --- Google Sheets ---
 let sheetsClient = null;
+let sheetsInitialized = false;
+
 async function initSheets() {
+  if (!SHEET_ID) {
+    console.warn("⚠️ Advertencia: SHEET_ID no está definido. La funcionalidad de Google Sheets estará deshabilitada.");
+    return;
+  }
+  
+  let key;
+  
   try {
-    const key = JSON.parse(await fs.readFile(GOOGLE_SERVICE_ACCOUNT_FILE, "utf8"));
-    const jwt = new google.auth.JWT(key.client_email, null, key.private_key, ["https://www.googleapis.com/auth/spreadsheets"]);
-    await jwt.authorize();
-    sheetsClient = google.sheets({ version: "v4", auth: jwt });
-    await ensureSheetTabs(["ElCholo","Ramirez","Tejada","Proveedores"]);
-    console.log("✅ Google Sheets inicializado.");
+      // 1. Intenta leer la variable de entorno JSON (Método más robusto para Secrets)
+      if (GOOGLE_CREDENTIALS_JSON_ENV) {
+          console.log("Intentando leer credenciales desde GOOGLE_CREDENTIALS_JSON...");
+          key = JSON.parse(GOOGLE_CREDENTIALS_JSON_ENV);
+      } else {
+          // 2. Intenta leer el archivo local (Fallback para Secret File)
+          console.log("Intentando leer credenciales desde archivo local...");
+          const keyFileContent = await fs.readFile(GOOGLE_SERVICE_ACCOUNT_FILE, "utf8");
+          key = JSON.parse(keyFileContent);
+      }
+
+      if (!key || !key.client_email || !key.private_key) {
+          throw new Error("Credenciales JSON incompletas o mal formadas.");
+      }
+      
+      const jwt = new google.auth.JWT(key.client_email, null, key.private_key, ["https://www.googleapis.com/auth/spreadsheets"]);
+      await jwt.authorize();
+      sheetsClient = google.sheets({ version: "v4", auth: jwt });
+      
+      // Aseguramos que las pestañas existan
+      await ensureSheetTabs(["ElCholo","Ramirez","Tejada","Proveedores"]);
+      
+      sheetsInitialized = true;
+      console.log("✅ Google Sheets inicializado correctamente.");
   } catch (e) {
-    console.warn("⚠️ No se pudo inicializar Google Sheets:", e.message);
+    // Si falla, solo advertir y deshabilitar Sheets. NO FALLAR LA INSTANCIA.
+    console.warn(`⚠️ Error CRÍTICO al inicializar Google Sheets. Funcionalidad DESHABILITADA: ${e.message}`);
+    sheetsInitialized = false;
+    sheetsClient = null;
   }
 }
 
 async function ensureSheetTabs(tabNames) {
-  if (!sheetsClient) return;
-  const meta = await sheetsClient.spreadsheets.get({ spreadsheetId: SHEET_ID });
-  const existing = (meta.data.sheets || []).map(s => s.properties.title);
-  const requests = tabNames.filter(t => !existing.includes(t)).map(title => ({ addSheet: { properties: { title } } }));
-  if (requests.length) {
-    await sheetsClient.spreadsheets.batchUpdate({ spreadsheetId: SHEET_ID, requestBody: { requests } });
-  }
-  // ensure headers
-  for (const t of tabNames) {
-    try {
-      const resp = await sheetsClient.spreadsheets.values.get({ spreadsheetId: SHEET_ID, range: `${t}!A1:I1` });
-      if (!resp.data.values || resp.data.values.length === 0) {
+  if (!sheetsInitialized) return;
+  try {
+    const meta = await sheetsClient.spreadsheets.get({ spreadsheetId: SHEET_ID });
+    const existing = (meta.data.sheets || []).map(s => s.properties.title);
+    const requests = tabNames.filter(t => !existing.includes(t)).map(title => ({ addSheet: { properties: { title } } }));
+    
+    if (requests.length) {
+      await sheetsClient.spreadsheets.batchUpdate({ spreadsheetId: SHEET_ID, requestBody: { requests } });
+    }
+    
+    // ensure headers
+    for (const t of tabNames) {
+      try {
+        const resp = await sheetsClient.spreadsheets.values.get({ spreadsheetId: SHEET_ID, range: `${t}!A1:I1` });
+        if (!resp.data.values || resp.data.values.length === 0) {
+          await sheetsClient.spreadsheets.values.update({
+            spreadsheetId: SHEET_ID,
+            range: `${t}!A1:I1`,
+            valueInputOption: "RAW",
+            requestBody: { values: [["Fecha","Proveedor","Código Producto","Descripción","Cantidad","Motivo","N° Remito/Factura","Fecha Factura","UsuarioID"]] }
+          });
+        }
+      } catch (e) {
+        // set headers if any error (sheet may be empty)
         await sheetsClient.spreadsheets.values.update({
           spreadsheetId: SHEET_ID,
           range: `${t}!A1:I1`,
           valueInputOption: "RAW",
           requestBody: { values: [["Fecha","Proveedor","Código Producto","Descripción","Cantidad","Motivo","N° Remito/Factura","Fecha Factura","UsuarioID"]] }
-        });
+        }).catch(()=>{});
       }
-    } catch (e) {
-      // set headers if any error (sheet may be empty)
-      await sheetsClient.spreadsheets.values.update({
-        spreadsheetId: SHEET_ID,
-        range: `${t}!A1:I1`,
-        valueInputOption: "RAW",
-        requestBody: { values: [["Fecha","Proveedor","Código Producto","Descripción","Cantidad","Motivo","N° Remito/Factura","Fecha Factura","UsuarioID"]] }
-      }).catch(()=>{});
     }
+  } catch (e) {
+    console.error("Error en ensureSheetTabs:", e.message);
   }
 }
 
 async function appendRowToSheet(tab, row) {
-  if (!sheetsClient) throw new Error("Sheets no inicializado");
+  if (!sheetsInitialized) throw new Error("Sheets no inicializado o deshabilitado.");
   await sheetsClient.spreadsheets.values.append({
     spreadsheetId: SHEET_ID,
     range: `${tab}!A:I`,
@@ -108,14 +150,14 @@ async function appendRowToSheet(tab, row) {
 }
 
 async function readProviders() {
-  if (!sheetsClient) return [];
+  if (!sheetsInitialized) return [];
   const resp = await sheetsClient.spreadsheets.values.get({ spreadsheetId: SHEET_ID, range: `Proveedores!A2:A` }).catch(()=>({ data: { values: [] }}));
   const vals = resp.data.values || [];
   return vals.map(v=>v[0]).filter(Boolean);
 }
 
 async function addProvider(name) {
-  if (!sheetsClient) throw new Error("Sheets no inicializado");
+  if (!sheetsInitialized) throw new Error("Sheets no inicializado o deshabilitado.");
   await sheetsClient.spreadsheets.values.append({
     spreadsheetId: SHEET_ID,
     range: `Proveedores!A:A`,
@@ -144,9 +186,14 @@ async function generateTicketPDF(data) {
 
       // logo
       try {
+        // La lectura del logo debe ser tolerante a fallos, pero el archivo debe existir.
         const logo = await fs.readFile(LOGO_PATH);
         doc.image(logo, 40, 40, { width: 120 });
-      } catch(e){}
+      } catch(e){
+        // Si el logo falla (el archivo no existe), se usa texto como fallback
+        console.warn(`Advertencia: No se pudo cargar el logo en ${LOGO_PATH}. Asegurate de que el archivo esté subido.`);
+        doc.fillColor(RED).fontSize(10).text("REPUESTOS EL CHOLO (Logo Faltante)", 40, 40);
+      }
 
       doc.fillColor(BLUE).fontSize(20).font("Helvetica-Bold").text("Ticket de Devolución", { align: "right" });
       doc.moveDown(0.5);
@@ -202,30 +249,38 @@ bot.command('help', async (ctx) => {
 
 
 bot.action('main', async (ctx)=>{ 
-  try{ await ctx.answerCbQuery(); } catch(e){} // FIX: Añadir try/catch para evitar crash por timeout
+  try{ await ctx.answerCbQuery(); } catch(e){} 
   await replyMain(ctx); 
 });
 
 bot.action('registro', async (ctx)=>{ 
-  try{ await ctx.answerCbQuery(); } catch(e){} // FIX: Añadir try/catch para evitar crash por timeout
+  try{ await ctx.answerCbQuery(); } catch(e){} 
   ctx.session.flow='registro'; 
   ctx.session.step='chooseRemitente'; 
   await ctx.editMessageText("¿A qué empresa corresponde la devolución?", remitenteKeyboard.reply_markup); 
 });
 
 bot.action(/remitente_(.+)/, async (ctx)=>{
-  try{ await ctx.answerCbQuery(); } catch(e){} // FIX: Añadir try/catch para evitar crash por timeout
+  try{ await ctx.answerCbQuery(); } catch(e){} 
   const remitente = ctx.match[1];
   ctx.session.remitente = remitente;
   ctx.session.step = 'chooseProveedor';
-  const provs = await readProviders();
+  
+  const provs = await readProviders(); // Lee proveedores (maneja si Sheets no está inicializado)
   let buttons = [];
   (provs.slice(0,10)).forEach((p,i)=> buttons.push([Markup.button.callback(`${i+1}. ${p}`, `prov_${i}`)]));
+  
   buttons.push([Markup.button.callback('Escribir otro proveedor', 'prov_other')]);
   buttons.push([Markup.button.callback('↩️ Cancelar', 'main')]);
   
-  // FIX: Usar el tercer argumento para pasar parse_mode
-  await ctx.editMessageText(`Remitente elegido: *${remitente}*\nElegí proveedor (o escribí uno):`, { 
+  let msg = `Remitente elegido: *${remitente}*\nElegí proveedor (o escribí uno):`;
+  if (!sheetsInitialized) {
+    msg = `Remitente elegido: *${remitente}*\n⚠️ La integración con Sheets está deshabilitada. Escribí el nombre del proveedor.`;
+    ctx.session.step = 'proveedor_manual'; 
+    return ctx.editMessageText(msg, { parse_mode: 'Markdown' });
+  }
+
+  await ctx.editMessageText(msg, { 
     parse_mode: 'Markdown', 
     reply_markup: Markup.inlineKeyboard(buttons).reply_markup 
   });
@@ -233,50 +288,59 @@ bot.action(/remitente_(.+)/, async (ctx)=>{
 });
 
 bot.action(/prov_(\d+)/, async (ctx)=>{
-  try{ await ctx.answerCbQuery(); } catch(e){} // FIX: Añadir try/catch para evitar crash por timeout
+  try{ await ctx.answerCbQuery(); } catch(e){} 
   const idx = Number(ctx.match[1]);
   const prov = ctx.session.provList?.[idx];
   ctx.session.proveedor = prov || 'N/D';
   ctx.session.step = 'codigo';
-  // FIX: Usar el tercer argumento para pasar parse_mode
   await ctx.editMessageText(`Proveedor seleccionado: *${ctx.session.proveedor}*.\nEnviá el *código del producto* (texto).`, { parse_mode: 'Markdown' });
 });
 
 bot.action('prov_other', async (ctx)=>{ 
-  try{ await ctx.answerCbQuery(); } catch(e){} // FIX: Añadir try/catch para evitar crash por timeout
+  try{ await ctx.answerCbQuery(); } catch(e){} 
   ctx.session.step='proveedor_manual'; 
   await ctx.editMessageText("Escribí el nombre del proveedor (texto)."); 
 });
 
 bot.action('agregar_proveedor', async (ctx)=>{ 
-  try{ await ctx.answerCbQuery(); } catch(e){} // FIX: Añadir try/catch para evitar crash por timeout
+  try{ await ctx.answerCbQuery(); } catch(e){} 
+  if (!sheetsInitialized) {
+    return ctx.reply("❌ Función no disponible. La integración con Google Sheets está deshabilitada.", mainKeyboard.reply_markup);
+  }
   ctx.session.flow='agregar_proveedor'; 
   ctx.session.step='nuevo_proveedor'; 
-  // FIX: Usar el tercer argumento para pasar parse_mode
   await ctx.editMessageText("Escribí el *nombre del proveedor* que querés agregar:", { parse_mode: 'Markdown' }); 
 });
 
 bot.action('consultar', async (ctx)=>{
-  // FIX: Usamos try/catch con advertencia ya que este handler hace I/O pesada (Sheets)
   try { await ctx.answerCbQuery(); } catch(e) { console.warn("Callback query timed out (consultar).", e.message); }
   
+  if (!sheetsInitialized) {
+    return ctx.reply("❌ Función no disponible. La integración con Google Sheets está deshabilitada.", mainKeyboard.reply_markup);
+  }
+
   await ctx.reply("Buscando últimas devoluciones (las últimas 5 de cada remitente). Esto puede tardar un segundo...");
   const tabs = ["ElCholo","Ramirez","Tejada"];
   let messages = [];
   for (const t of tabs) {
     try {
-      const resp = await (sheetsClient ? sheetsClient.spreadsheets.values.get({ spreadsheetId: SHEET_ID, range: `${t}!A2:I` }) : Promise.resolve({ data: { values: [] } }));
+      const resp = await sheetsClient.spreadsheets.values.get({ spreadsheetId: SHEET_ID, range: `${t}!A2:I` });
       const rows = (resp.data.values || []).slice(-5).reverse();
       if (rows.length) messages.push(`*${t}*:\n` + rows.map(r=>`• ${r[0]} - ${r[1]} - ${r[4]}u - ${r[6] || 'sin nro'}`).join("\n"));
-    } catch(e){}
+    } catch(e){
+      console.error(`Error leyendo pestaña ${t}:`, e.message);
+    }
   }
   if (!messages.length) await ctx.reply("No se encontraron devoluciones.");
-  // FIX: Usar el tercer argumento para pasar parse_mode
   else await ctx.reply(messages.join("\n\n"), { parse_mode: 'Markdown' });
 });
 
 bot.action('ver_proveedores', async (ctx)=>{ 
-  try{ await ctx.answerCbQuery(); } catch(e){} // FIX: Añadir try/catch para evitar crash por timeout
+  try{ await ctx.answerCbQuery(); } catch(e){} 
+  if (!sheetsInitialized) {
+    return ctx.reply("❌ Función no disponible. La integración con Google Sheets está deshabilitada.", mainKeyboard.reply_markup);
+  }
+
   const provs = await readProviders(); 
   if (!provs.length) return ctx.reply("No hay proveedores cargados."); 
   const formatted = provs.map((p,i)=> `${i+1}. ${p}`).join("\n"); 
@@ -284,8 +348,9 @@ bot.action('ver_proveedores', async (ctx)=>{
 });
 
 bot.action('ver_estado', async (ctx)=>{ 
-  try{ await ctx.answerCbQuery(); } catch(e){} // FIX: Añadir try/catch para evitar crash por timeout
-  await ctx.reply(`Estado del bot: ${botStatus}`); 
+  try{ await ctx.answerCbQuery(); } catch(e){} 
+  let sheetsStatus = sheetsInitialized ? "✅ Habilitada" : "❌ Deshabilitada (Error de credenciales)";
+  await ctx.reply(`Estado del bot: ${botStatus}\nIntegración con Sheets: ${sheetsStatus}`); 
 });
 
 bot.on('text', async (ctx)=>{
@@ -296,10 +361,17 @@ bot.on('text', async (ctx)=>{
   const s = ctx.session || {};
 
   if (s.flow === 'agregar_proveedor' && s.step === 'nuevo_proveedor') {
+    if (!sheetsInitialized) {
+      return ctx.reply("❌ No se puede agregar el proveedor. La integración con Google Sheets está deshabilitada.", mainKeyboard.reply_markup);
+    }
     const name = text;
-    await addProvider(name);
-    // FIX: Usar el tercer argumento para pasar parse_mode
-    await ctx.reply(`✅ Proveedor *${name}* agregado.`, { parse_mode: 'Markdown' });
+    try {
+      await addProvider(name);
+      await ctx.reply(`✅ Proveedor *${name}* agregado.`, { parse_mode: 'Markdown' });
+    } catch(e) {
+      console.error("Error al agregar proveedor:", e.message);
+      await ctx.reply("Ocurrió un error al agregar el proveedor.");
+    }
     ctx.session = {};
     return replyMain(ctx);
   }
@@ -326,7 +398,6 @@ Fecha factura: ${ctx.session.fechaFactura}
       `;
       ctx.session.step = 'confirm';
       
-      // 🛑 FIX CLAVE: Cambiar .extra() por el tercer argumento de ctx.reply
       return ctx.reply(summary, 
         Markup.inlineKeyboard([ 
           Markup.button.callback('✅ Confirmar y guardar','confirm_save'), 
@@ -357,39 +428,65 @@ Fecha factura: ${ctx.session.fechaFactura}
 });
 
 bot.action('confirm_save', async (ctx)=>{
-  // FIX: Usamos try/catch con advertencia ya que este handler hace I/O pesada (Sheets, PDF)
   try { await ctx.answerCbQuery(); } catch(e) { console.warn("Callback query timed out (confirm_save).", e.message); }
   
   const s = ctx.session;
   if (!s || !s.remitente) return ctx.reply("No hay datos para guardar. Volvé al menú.", mainKeyboard.reply_markup);
+  
   const tab = s.remitente;
   const row = [ new Date().toLocaleString(), s.proveedor||'', s.codigo||'', s.descripcion||'', s.cantidad||'', s.motivo||'', s.remito||'', s.fechaFactura||'', String(ctx.chat.id) ];
-  try {
-    await appendRowToSheet(tab, row);
-    await ctx.reply("✅ Devolución registrada correctamente.");
-    await appendLog(`Devolución guardada en ${tab} por ${ctx.from?.first_name} (${ctx.chat.id})`);
 
+  let sheetsError = false;
+  
+  if (sheetsInitialized) {
+    try {
+      await appendRowToSheet(tab, row);
+      await ctx.reply("✅ Devolución registrada correctamente en Google Sheets.");
+      await appendLog(`Devolución guardada en ${tab} por ${ctx.from?.first_name} (${ctx.chat.id})`);
+    } catch (err) {
+      console.error("Error guardando en Sheets:", err.message);
+      sheetsError = true;
+      await ctx.reply("⚠️ Atención: Ocurrió un error al guardar en Google Sheets. La información no se registró en la hoja. Avisá al administrador.");
+    }
+  } else {
+    // Si Sheets no está inicializado, notificamos, pero el flujo continua para generar el PDF.
+    await ctx.reply("⚠️ La integración con Google Sheets está deshabilitada. La información NO se registró en la hoja.");
+  }
+
+  // Generación y envío del PDF (siempre intentamos generar el PDF independientemente del Sheets)
+  try {
     const ticketData = { remitente: tab, proveedor: s.proveedor, codigo: s.codigo, descripcion: s.descripcion, cantidad: s.cantidad, motivo: s.motivo, remito: s.remito, fechaFactura: s.fechaFactura, usuario: ctx.from?.first_name || ctx.from?.username || String(ctx.chat.id) };
     const pdfBuf = await generateTicketPDF(ticketData);
 
     if (OWNER_CHAT_ID) {
       try {
-        await bot.telegram.sendDocument(OWNER_CHAT_ID, { source: pdfBuf, filename: `ticket_${Date.now()}.pdf` }, { caption: `Nueva devolución registrada en ${tab}` });
+        await bot.telegram.sendDocument(OWNER_CHAT_ID, { source: pdfBuf, filename: `ticket_${Date.now()}.pdf` }, { caption: `Nueva devolución registrada en ${tab} (Registro en Sheets: ${sheetsError ? 'FALLÓ' : sheetsInitialized ? 'OK' : 'OFF'}).` });
       } catch(e){ console.error("Error enviando notificación al owner:", e.message); }
     }
+    
+    if (!sheetsError) { // Si el registro de Sheets fue OK o si Sheets estaba deshabilitado, enviamos el mensaje final de éxito del flujo.
+      await ctx.reply("Recordá conservar tu ticket PDF para seguimiento.");
+    }
 
-    ctx.session = {};
-    return replyMain(ctx);
-  } catch (err) {
-    console.error("Error guardando en Sheets:", err.message);
-    await ctx.reply("Ocurrió un error al guardar. Avisá al administrador.");
-    return replyMain(ctx);
+  } catch(e) {
+    console.error("Error generando/enviando PDF:", e.message);
+    // Nota: El PDF falló, pero el registro de Sheets podría haber funcionado.
+    if (sheetsError) {
+        // Solo enviamos el mensaje de error general si Sheets *también* falló.
+        await ctx.reply("❌ Error al generar el ticket PDF. Avisá al administrador.");
+    }
   }
+
+  ctx.session = {};
+  return replyMain(ctx);
 });
 
 // init and launch
 (async ()=>{
-  try { await initSheets(); } catch(e){ console.warn("Sheets init failed:", e.message); }
+  // Inicializamos Sheets primero, pero si falla, la bandera sheetsInitialized será false.
+  // El bot seguirá lanzándose.
+  await initSheets(); 
+  
   await bot.launch();
   botStatus = "conectado";
   console.log("✅ Bot de Telegram iniciado.");

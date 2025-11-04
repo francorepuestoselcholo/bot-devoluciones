@@ -1,0 +1,13 @@
+{
+  "type": "service_account",
+  "project_id": "gen-lang-client-0104843305",
+  "private_key_id": "b3e3d726d2189f26b3d16a93cf0cbabac414f6c9",
+  "private_key": "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQDpu4rQ6DyC3k4c\nwGwpo22strKYYjDg+h/DjPPuBmhdvZLPH6kPjBhGys+9l2nRViPQreIWduddXElD\nkRmoE5Bhvj5oqW+aoD4bFMGp09aLE+qrL7Rll96nPw+BEKQPdrhxz0qtMp2wkEGp\nvc6hxmtvfDi9g4qf/mhA23SGqOlz60Ga3Kl3W8Kh1cli3ddEKanb20s/dp/+K31T\nq70f1YPtVR6ZCeqP0CWYVnbRL9+oDyp2/GXFGvGPLOAUAF8ZnBAJ709u0GKe3KLs\n98mwMrszWejXC7nb0v5TKy5f+SA3FsxDXzcrDvneelV4nwwWRnmTgTIYX/OhzKKQ\nAdE0WjpnAgMBAAECggEAUQwD/Z6Z5PM6+MNMfj+6Nwp+8VITCuAQhZlpuB6mr+Kd\ndo7O66IzhNCsqlxHiBwrfR/eZtXCMmBe0zwMPnjSNuJl95rRJTftcSyIXuAi48T7\nOXLoRdYckbfPI3zmtqn/GQ+9IEON5HyRGE/Fx9jqxhS4BBcJyaLI+bxfMpZ9pQDD\n3uEpLrnDGVsvIiaYvlgKONBy4VnZrNdPibLKFmxA6mrfL5kgA8fGx8PiHt4aGQ4x\n6uK8O0DtIqEUsbhnxx7FP2UDbAn46eYKG7w5Z/1Z1q33o4BJYXOA8Nw/9DQTO7oN\nXKsK3O66LdVOnC5ur3nieVJhN5P0+SJD2Gdkv+LasQKBgQD75fHw8ftdh0OUX2Uu\nNIqzxPg6I+KSVy4AgLaxGjLZHtVun+PpQDOXS9J5LDD3Yi/5Mb/Dz2oVV1XxY/La\nHZVJ3BcwPZmcKKrqAhaIhoLBb33c834MayIHmEZCNWn4So7rdUucxekhjHTg7z2Q\nzU+t/3n32TD/Imu3bjHsp+BmLwKBgQDtid9ag8ntudWUCtpgEy7jsfGi1e3Y7HlA\n1k9/QCdmf6UxhzWfeXPcIoMAMXgnfbW0C+D0qx0rh5U95SIJ9p/RaJbDfleDIalH\nb2YrkK/r104re3bpeZpwvRD1wk+3lD4lmrEYSH50ifJ60SxHI8hfSMR/hDyXRxKj\nKbTMZKWZSQKBgQC/3HO8PsNjiIxbrZFGcTSYGlWrCvwe1JIwRdlg6YCDSW3tVZFl\nbsYc3d6Q9qzRMBM0LcVPImM9oAjQ1Hz7zv6PhDiRQMoIXB1aIX8CO9nJ9d6a9Ucz\ntEH2IPCaq05slHVpOC0AWunn6LB5Rx/Qc+DVubovolkkaxY6X49dHrzXdwKBgE+d\nnH0sGuxREyLxmEwHYfnzVHgtl/DTIbj3m+Gc0RfrxKSbGv/+pzSrZJkV+53Q5qwY\nJygaikZixUTfnc8VGHAJzC5uFErhZ2mIDwifEDfODGdKlIqgtYD//cVBgZKYX1Qf\nSyhGdAv/iIRdw6d8eNZm/2V2HxDdQ4PooK65NT/xAoGAdY0gBzJ0xnFQogAQuQQu\no57P6NTJzY7d+kOJ7nuRoSmBXUiYlY5Mz1XnAX8bGu/sA01qmrw08GeL7vjsT+ZO\nmtbu/dhUKNij8I67qH/E8OjtxEP7wk3AB21/BCXTtH8Upi6KSv9PF24cKJHqt92R\nkEp+u3r3fuFPbz4Z4j7plQg=\n-----END PRIVATE KEY-----\n",
+  "client_email": "bot-devoluciones-sa@gen-lang-client-0104843305.iam.gserviceaccount.com",
+  "client_id": "107708071531070629311",
+  "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+  "token_uri": "https://oauth2.googleapis.com/token",
+  "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+  "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/bot-devoluciones-sa%40gen-lang-client-0104843305.iam.gserviceaccount.com",
+  "universe_domain": "googleapis.com"
+}
