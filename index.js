@@ -546,7 +546,8 @@ bot.action('confirm_save', async (ctx)=>{
   }
 
   console.log("✅ Bot de Telegram iniciado.");
+  
+  // SOLUCIÓN: Adjuntar los manejadores de detención SÓLO después de que el bot se haya iniciado correctamente.
+  process.once('SIGINT', ()=>bot.stop('SIGINT'));
+  process.once('SIGTERM', ()=>bot.stop('SIGTERM'));
 })();
-
-process.once('SIGINT', ()=>bot.stop('SIGINT'));
-process.once('SIGTERM', ()=>bot.stop('SIGTERM'));
