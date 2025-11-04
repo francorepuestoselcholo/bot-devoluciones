@@ -20,6 +20,8 @@ const GEMINI_API_KEY = process.env.GEMINI_API_KEY || null;
 const LOG_FILE = "logs.txt";
 const PORT = process.env.PORT || 3000;
 const LOGO_PATH = "./REPUESTOS EL CHOLO LOGO.png"; // RUTA DEL LOGO (DEBE ESTAR SUBIDO)
+// NUEVA CONFIGURACIÓN: URL pública para Webhooks
+const WEBHOOK_URL = process.env.WEBHOOK_URL; 
 
 if (!BOT_TOKEN) throw new Error("FATAL: BOT_TOKEN no definido en variables de entorno.");
 
@@ -493,12 +495,30 @@ bot.action('confirm_save', async (ctx)=>{
 
 // init and launch
 (async ()=>{
-  // Inicializamos Sheets primero, pero si falla, la bandera sheetsInitialized será false.
-  // El bot seguirá lanzándose.
+  // Inicializamos Sheets primero...
   await initSheets(); 
-  
-  await bot.launch();
-  botStatus = "conectado";
+
+  if (WEBHOOK_URL) {
+      // Modo Webhook (Recomendado para producción para evitar error 409)
+      const secretPath = `/telegraf/${BOT_TOKEN}`; 
+      
+      // 1. Configurar Express para escuchar las actualizaciones de Telegram
+      // IMPORTANTE: Asegúrate de que Express esté configurado para parsear JSON si usas Telegraf > 4.10.0
+      // En este caso, Telegraf lo maneja internamente con bot.webhookCallback(path)
+      app.use(bot.webhookCallback(secretPath));
+      
+      // 2. Establecer el webhook en Telegram
+      await bot.telegram.setWebhook(`${WEBHOOK_URL}${secretPath}`);
+      
+      console.log(`✅ Bot en modo Webhook. Escuchando en ${WEBHOOK_URL}${secretPath}`);
+      botStatus = "conectado (webhook)";
+  } else {
+      // Modo Polling (Usado para desarrollo, puede causar error 409 en despliegues con múltiples procesos)
+      console.warn("⚠️ WEBHOOK_URL no definido. Usando Telegraf Polling. Si ocurre un error 409, definí WEBHOOK_URL en tu entorno de despliegue.");
+      await bot.launch();
+      botStatus = "conectado (polling)";
+  }
+
   console.log("✅ Bot de Telegram iniciado.");
 })();
 
