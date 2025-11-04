@@ -14,7 +14,7 @@ const OWNER_CHAT_ID = process.env.OWNER_CHAT_ID || null;
 const SHEET_ID = process.env.GOOGLE_SHEET_ID || "1BFGsZaUwvxV4IbGgXNOp5IrMYLVn-czVYpdxTleOBgo"; // ID de ejemplo
 
 // Credenciales: SE ESPERA QUE ESTE ARCHIVO ESTÉ EN EL DISCO (subido como Secret File)
-const GOOGLE_SERVICE_ACCOUNT_FILE = "./gen-lang-client-0104843305-b3e3d726d218.json"; 
+const GOOGLE_SERVICE_ACCOUNT_FILE = "./gen-lang-client-0104843305-3b7345de7ec0.json"; 
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || null;
 const LOG_FILE = "logs.txt";
@@ -26,10 +26,12 @@ if (!BOT_TOKEN) throw new Error("FATAL: BOT_TOKEN no definido en variables de en
 // --- Express ---
 const app = express();
 let botStatus = "iniciando";
+let sheetsErrorDetail = "Intentando inicializar Google Sheets...";
+
 app.get("/", (req, res) => {
   res.send(`<html><head><meta charset="utf-8"><meta http-equiv="refresh" content="10"></head><body style="font-family: Arial, Helvetica, sans-serif; padding:20px;"><h2>🤖 Bot de Telegram - Repuestos El Cholo</h2><div>Estado: <b>${botStatus}</b></div><p>El bot escucha mensajes por Telegram.</p></body></html>`);
 });
-app.get("/status", (req, res) => res.json({ status: botStatus }));
+app.get("/status", (req, res) => res.json({ status: botStatus, sheetsStatus: sheetsInitialized ? "OK" : sheetsErrorDetail }));
 app.listen(PORT, () => console.log(`Express escuchando en ${PORT}`));
 
 // --- Bot ---
@@ -60,7 +62,9 @@ let sheetsClient = null;
 let sheetsInitialized = false;
 
 async function initSheets() {
+  sheetsErrorDetail = "Cargando...";
   if (!SHEET_ID) {
+    sheetsErrorDetail = "SHEET_ID no definido.";
     console.warn("⚠️ Advertencia: SHEET_ID no está definido. La funcionalidad de Google Sheets estará deshabilitada.");
     return;
   }
@@ -76,9 +80,7 @@ async function initSheets() {
           throw new Error("Credenciales JSON incompletas o mal formadas.");
       }
       
-      // *** FIX CRÍTICO: SANITIZACIÓN DE CLAVE PRIVADA ***
-      // Reemplaza \\n (cadenas de escape) con caracteres de nueva línea real \n,
-      // necesario cuando el JSON se lee de un entorno que escapa las nuevas líneas.
+      // FIX CRÍTICO: SANITIZACIÓN DE CLAVE PRIVADA
       const privateKey = key.private_key.replace(/\\n/g, '\n'); 
 
       const jwt = new google.auth.JWT(key.client_email, null, privateKey, ["https://www.googleapis.com/auth/spreadsheets"]);
@@ -89,10 +91,15 @@ async function initSheets() {
       await ensureSheetTabs(["ElCholo","Ramirez","Tejada","Proveedores"]);
       
       sheetsInitialized = true;
+      sheetsErrorDetail = "OK";
       console.log("✅ Google Sheets inicializado correctamente.");
   } catch (e) {
-    // Si falla, solo advertir y deshabilitar Sheets. NO FALLAR LA INSTANCIA.
-    console.warn(`⚠️ Error CRÍTICO al inicializar Google Sheets. Funcionalidad DESHABILITADA (Archivo ${GOOGLE_SERVICE_ACCOUNT_FILE} no encontrado o inválido): ${e.message}`);
+    // Si falla, solo advertir y deshabilitar Sheets.
+    sheetsErrorDetail = e.message.includes('ENOENT') 
+      ? `ARCHIVO NO ENCONTRADO (${GOOGLE_SERVICE_ACCOUNT_FILE})`
+      : `FALLO DE AUTENTICACIÓN: ${e.message}`;
+    
+    console.warn(`⚠️ Error CRÍTICO al inicializar Google Sheets. Funcionalidad DESHABILITADA: ${e.message}`);
     sheetsInitialized = false;
     sheetsClient = null;
   }
@@ -110,6 +117,7 @@ async function ensureSheetTabs(tabNames) {
     }
     
     // ensure headers
+    const headers = ["Fecha","Proveedor","Código Producto","Descripción","Cantidad","Motivo","N° Remito/Factura","Fecha Factura","UsuarioID"];
     for (const t of tabNames) {
       try {
         const resp = await sheetsClient.spreadsheets.values.get({ spreadsheetId: SHEET_ID, range: `${t}!A1:I1` });
@@ -118,7 +126,7 @@ async function ensureSheetTabs(tabNames) {
             spreadsheetId: SHEET_ID,
             range: `${t}!A1:I1`,
             valueInputOption: "RAW",
-            requestBody: { values: [["Fecha","Proveedor","Código Producto","Descripción","Cantidad","Motivo","N° Remito/Factura","Fecha Factura","UsuarioID"]] }
+            requestBody: { values: [headers] }
           });
         }
       } catch (e) {
@@ -127,7 +135,7 @@ async function ensureSheetTabs(tabNames) {
           spreadsheetId: SHEET_ID,
           range: `${t}!A1:I1`,
           valueInputOption: "RAW",
-          requestBody: { values: [["Fecha","Proveedor","Código Producto","Descripción","Cantidad","Motivo","N° Remito/Factura","Fecha Factura","UsuarioID"]] }
+          requestBody: { values: [headers] }
         }).catch(()=>{});
       }
     }
@@ -148,6 +156,7 @@ async function appendRowToSheet(tab, row) {
 
 async function readProviders() {
   if (!sheetsInitialized) return [];
+  // Lectura de proveedores, ignora el encabezado (A2:A)
   const resp = await sheetsClient.spreadsheets.values.get({ spreadsheetId: SHEET_ID, range: `Proveedores!A2:A` }).catch(()=>({ data: { values: [] }}));
   const vals = resp.data.values || [];
   return vals.map(v=>v[0]).filter(Boolean);
@@ -346,7 +355,7 @@ bot.action('ver_proveedores', async (ctx)=>{
 
 bot.action('ver_estado', async (ctx)=>{ 
   try{ await ctx.answerCbQuery(); } catch(e){} 
-  let sheetsStatus = sheetsInitialized ? "✅ Habilitada" : `❌ Deshabilitada (Archivo de credenciales ${GOOGLE_SERVICE_ACCOUNT_FILE} no encontrado o clave inválida)`;
+  let sheetsStatus = sheetsInitialized ? "✅ Habilitada" : `❌ Deshabilitada. Detalle: ${sheetsErrorDetail}`;
   await ctx.reply(`Estado del bot: ${botStatus}\nIntegración con Sheets: ${sheetsStatus}`); 
 });
 
