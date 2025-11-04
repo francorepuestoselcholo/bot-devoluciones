@@ -1,8 +1,7 @@
 import { promises as fs } from "fs";
 import express from "express";
-// Importación corregida: Eliminamos 'session' nativo de Telegraf.
 import { Telegraf, Markup } from "telegraf"; 
-import LocalSession from 'telegraf-session-local'; // <-- Nuevo import para sesión
+import LocalSession from 'telegraf-session-local'; 
 import PDFDocument from "pdfkit";
 import { google } from "googleapis";
 import axios from "axios";
@@ -31,11 +30,9 @@ app.listen(PORT, () => console.log(`Express escuchando en ${PORT}`));
 // --- Bot ---
 const bot = new Telegraf(BOT_TOKEN);
 
-// 🛑 FIX: Middleware de sesión con persistencia
-// Usamos LocalSession para asegurar que ctx.session está definido
+// FIX: Middleware de sesión con persistencia
 bot.use(
   (new LocalSession({ 
-    // Guarda el estado de la sesión en un archivo (mejor que la memoria RAM de Render)
     database: 'session_db.json' 
   })).middleware()
 );
@@ -188,36 +185,36 @@ async function generateTicketPDF(data) {
 const replyMain = async (ctx) => { 
   ctx.session = {}; // Resetear sesión
   ctx.session.step = 'main_menu'; // Establecer un estado inicial seguro
-  return ctx.reply("Menú principal:", mainKeyboard); 
+  return ctx.reply("Menú principal:", mainKeyboard.reply_markup); 
 };
 
 bot.start(async (ctx) => {
   ctx.session = {};
   ctx.session.step = 'main_menu'; // Establecer un estado inicial seguro
   await appendLog(`Comienzo /start chat ${ctx.chat.id}`);
-  await ctx.reply("👋 Hola! Soy el bot de devoluciones. ¿Qué querés hacer?", mainKeyboard);
+  await ctx.reply("👋 Hola! Soy el bot de devoluciones. ¿Qué querés hacer?", mainKeyboard.reply_markup);
 });
 
-// 📌 Nuevo Handler: Comando /help (solicitado)
+// Nuevo Handler: Comando /help (solicitado)
 bot.command('help', async (ctx) => {
-  await ctx.reply("Soy el Bot de Devoluciones de Repuestos El Cholo. Solo respondo a los comandos y botones del menú.\n\nComandos:\n/start - Muestra el menú principal.\n/help - Muestra esta ayuda.\n\nPara interactuar, usá los botones del Menú Principal.", mainKeyboard);
+  await ctx.reply("Soy el Bot de Devoluciones de Repuestos El Cholo. Solo respondo a los comandos y botones del menú.\n\nComandos:\n/start - Muestra el menú principal.\n/help - Muestra esta ayuda.\n\nPara interactuar, usá los botones del Menú Principal.", mainKeyboard.reply_markup);
 });
 
 
 bot.action('main', async (ctx)=>{ 
-  try{ await ctx.answerCbQuery(); } catch(e){} // 🛑 FIX: Añadir try/catch para evitar crash por timeout
+  try{ await ctx.answerCbQuery(); } catch(e){} // FIX: Añadir try/catch para evitar crash por timeout
   await replyMain(ctx); 
 });
 
 bot.action('registro', async (ctx)=>{ 
-  try{ await ctx.answerCbQuery(); } catch(e){} // 🛑 FIX: Añadir try/catch para evitar crash por timeout
+  try{ await ctx.answerCbQuery(); } catch(e){} // FIX: Añadir try/catch para evitar crash por timeout
   ctx.session.flow='registro'; 
   ctx.session.step='chooseRemitente'; 
-  await ctx.editMessageText("¿A qué empresa corresponde la devolución?", remitenteKeyboard); 
+  await ctx.editMessageText("¿A qué empresa corresponde la devolución?", remitenteKeyboard.reply_markup); 
 });
 
 bot.action(/remitente_(.+)/, async (ctx)=>{
-  try{ await ctx.answerCbQuery(); } catch(e){} // 🛑 FIX: Añadir try/catch para evitar crash por timeout
+  try{ await ctx.answerCbQuery(); } catch(e){} // FIX: Añadir try/catch para evitar crash por timeout
   const remitente = ctx.match[1];
   ctx.session.remitente = remitente;
   ctx.session.step = 'chooseProveedor';
@@ -226,34 +223,41 @@ bot.action(/remitente_(.+)/, async (ctx)=>{
   (provs.slice(0,10)).forEach((p,i)=> buttons.push([Markup.button.callback(`${i+1}. ${p}`, `prov_${i}`)]));
   buttons.push([Markup.button.callback('Escribir otro proveedor', 'prov_other')]);
   buttons.push([Markup.button.callback('↩️ Cancelar', 'main')]);
-  await ctx.editMessageText(`Remitente elegido: *${remitente}*\nElegí proveedor (o escribí uno):`, { parse_mode: 'Markdown', ...Markup.inlineKeyboard(buttons) });
+  
+  // FIX: Usar el tercer argumento para pasar parse_mode
+  await ctx.editMessageText(`Remitente elegido: *${remitente}*\nElegí proveedor (o escribí uno):`, { 
+    parse_mode: 'Markdown', 
+    reply_markup: Markup.inlineKeyboard(buttons).reply_markup 
+  });
   ctx.session.provList = provs;
 });
 
 bot.action(/prov_(\d+)/, async (ctx)=>{
-  try{ await ctx.answerCbQuery(); } catch(e){} // 🛑 FIX: Añadir try/catch para evitar crash por timeout
+  try{ await ctx.answerCbQuery(); } catch(e){} // FIX: Añadir try/catch para evitar crash por timeout
   const idx = Number(ctx.match[1]);
   const prov = ctx.session.provList?.[idx];
   ctx.session.proveedor = prov || 'N/D';
   ctx.session.step = 'codigo';
+  // FIX: Usar el tercer argumento para pasar parse_mode
   await ctx.editMessageText(`Proveedor seleccionado: *${ctx.session.proveedor}*.\nEnviá el *código del producto* (texto).`, { parse_mode: 'Markdown' });
 });
 
 bot.action('prov_other', async (ctx)=>{ 
-  try{ await ctx.answerCbQuery(); } catch(e){} // 🛑 FIX: Añadir try/catch para evitar crash por timeout
+  try{ await ctx.answerCbQuery(); } catch(e){} // FIX: Añadir try/catch para evitar crash por timeout
   ctx.session.step='proveedor_manual'; 
   await ctx.editMessageText("Escribí el nombre del proveedor (texto)."); 
 });
 
 bot.action('agregar_proveedor', async (ctx)=>{ 
-  try{ await ctx.answerCbQuery(); } catch(e){} // 🛑 FIX: Añadir try/catch para evitar crash por timeout
+  try{ await ctx.answerCbQuery(); } catch(e){} // FIX: Añadir try/catch para evitar crash por timeout
   ctx.session.flow='agregar_proveedor'; 
   ctx.session.step='nuevo_proveedor'; 
+  // FIX: Usar el tercer argumento para pasar parse_mode
   await ctx.editMessageText("Escribí el *nombre del proveedor* que querés agregar:", { parse_mode: 'Markdown' }); 
 });
 
 bot.action('consultar', async (ctx)=>{
-  // 🛑 FIX: Usamos try/catch con advertencia ya que este handler hace I/O pesada (Sheets)
+  // FIX: Usamos try/catch con advertencia ya que este handler hace I/O pesada (Sheets)
   try { await ctx.answerCbQuery(); } catch(e) { console.warn("Callback query timed out (consultar).", e.message); }
   
   await ctx.reply("Buscando últimas devoluciones (las últimas 5 de cada remitente). Esto puede tardar un segundo...");
@@ -267,11 +271,12 @@ bot.action('consultar', async (ctx)=>{
     } catch(e){}
   }
   if (!messages.length) await ctx.reply("No se encontraron devoluciones.");
+  // FIX: Usar el tercer argumento para pasar parse_mode
   else await ctx.reply(messages.join("\n\n"), { parse_mode: 'Markdown' });
 });
 
 bot.action('ver_proveedores', async (ctx)=>{ 
-  try{ await ctx.answerCbQuery(); } catch(e){} // 🛑 FIX: Añadir try/catch para evitar crash por timeout
+  try{ await ctx.answerCbQuery(); } catch(e){} // FIX: Añadir try/catch para evitar crash por timeout
   const provs = await readProviders(); 
   if (!provs.length) return ctx.reply("No hay proveedores cargados."); 
   const formatted = provs.map((p,i)=> `${i+1}. ${p}`).join("\n"); 
@@ -279,7 +284,7 @@ bot.action('ver_proveedores', async (ctx)=>{
 });
 
 bot.action('ver_estado', async (ctx)=>{ 
-  try{ await ctx.answerCbQuery(); } catch(e){} // 🛑 FIX: Añadir try/catch para evitar crash por timeout
+  try{ await ctx.answerCbQuery(); } catch(e){} // FIX: Añadir try/catch para evitar crash por timeout
   await ctx.reply(`Estado del bot: ${botStatus}`); 
 });
 
@@ -293,6 +298,7 @@ bot.on('text', async (ctx)=>{
   if (s.flow === 'agregar_proveedor' && s.step === 'nuevo_proveedor') {
     const name = text;
     await addProvider(name);
+    // FIX: Usar el tercer argumento para pasar parse_mode
     await ctx.reply(`✅ Proveedor *${name}* agregado.`, { parse_mode: 'Markdown' });
     ctx.session = {};
     return replyMain(ctx);
@@ -319,7 +325,15 @@ N° Remito/Factura: ${ctx.session.remito}
 Fecha factura: ${ctx.session.fechaFactura}
       `;
       ctx.session.step = 'confirm';
-      return ctx.reply(summary, Markup.inlineKeyboard([ Markup.button.callback('✅ Confirmar y guardar','confirm_save'), Markup.button.callback('✏️ Cancelar','main') ]).extra({ parse_mode: 'Markdown' }));
+      
+      // 🛑 FIX CLAVE: Cambiar .extra() por el tercer argumento de ctx.reply
+      return ctx.reply(summary, 
+        Markup.inlineKeyboard([ 
+          Markup.button.callback('✅ Confirmar y guardar','confirm_save'), 
+          Markup.button.callback('✏️ Cancelar','main') 
+        ]).reply_markup, 
+        { parse_mode: 'Markdown' }
+      );
     }
   }
 
@@ -339,15 +353,15 @@ Fecha factura: ${ctx.session.fechaFactura}
   }
 
   // Fallback si no está en un flujo y Gemini no respondió o no está configurado
-  await ctx.reply("No entendí eso — elegí una opción:", mainKeyboard);
+  await ctx.reply("No entendí eso — elegí una opción:", mainKeyboard.reply_markup);
 });
 
 bot.action('confirm_save', async (ctx)=>{
-  // 🛑 FIX: Usamos try/catch con advertencia ya que este handler hace I/O pesada (Sheets, PDF)
+  // FIX: Usamos try/catch con advertencia ya que este handler hace I/O pesada (Sheets, PDF)
   try { await ctx.answerCbQuery(); } catch(e) { console.warn("Callback query timed out (confirm_save).", e.message); }
   
   const s = ctx.session;
-  if (!s || !s.remitente) return ctx.reply("No hay datos para guardar. Volvé al menú.", mainKeyboard);
+  if (!s || !s.remitente) return ctx.reply("No hay datos para guardar. Volvé al menú.", mainKeyboard.reply_markup);
   const tab = s.remitente;
   const row = [ new Date().toLocaleString(), s.proveedor||'', s.codigo||'', s.descripcion||'', s.cantidad||'', s.motivo||'', s.remito||'', s.fechaFactura||'', String(ctx.chat.id) ];
   try {
