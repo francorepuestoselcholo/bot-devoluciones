@@ -419,14 +419,14 @@ Fecha factura: ${ctx.session.fechaFactura}
   // fallback: Gemini AI
   if (GEMINI_API_KEY) {
     try {
-      // Usamos gemini-2.5-flash-preview-09-2025 para mayor estabilidad
+      // Cambio CRÍTICO: 'config' ha sido cambiado a 'generationConfig'
       const payload = {
           contents: [{ parts: [{ text: text }] }],
           // Añadimos un systemInstruction para darle contexto de bot de repuestos
           systemInstruction: {
               parts: [{ text: "Eres un asistente amigable y formal que responde preguntas generales, pero siempre sugiere usar el menú principal para las funciones del bot de devoluciones de Repuestos El Cholo." }]
           },
-          config: {
+          generationConfig: {
             maxOutputTokens: 256
           }
       };
@@ -446,7 +446,7 @@ Fecha factura: ${ctx.session.fechaFactura}
         // El servidor respondió con un código de estado fuera de 2xx
         console.error(`Error Gemini: Status ${e.response.status}. Data:`, e.response.data);
         // Si el status es 400, la data debería decir si es por API key o estructura de payload.
-        await ctx.reply("⚠️ Error de API: No pude procesar tu solicitud con el asistente (código 400). Por favor, revisá la consola para el detalle del error.", mainKeyboard.reply_markup);
+        await ctx.reply(`⚠️ Error de API: No pude procesar tu solicitud con el asistente (código ${e.response.status}). Por favor, revisá la consola para el detalle del error.`, mainKeyboard.reply_markup);
       } else if (e.request) {
         // La solicitud fue hecha pero no hubo respuesta
         console.error("Error Gemini: No se recibió respuesta del servidor.", e.message);
