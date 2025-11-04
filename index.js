@@ -280,8 +280,7 @@ bot.action('registro', async (ctx)=>{
   ctx.session.flow='registro'; 
   ctx.session.step='chooseRemitente'; 
   
-  // *** CAMBIO CRÍTICO: Usamos ctx.reply en lugar de ctx.editMessageText ***
-  // Esto envía un mensaje nuevo, asegurando que el teclado de empresas aparezca.
+  // Usamos ctx.reply para asegurar que el teclado de empresas aparezca.
   await ctx.reply("¿A qué empresa corresponde la devolución?", { 
       reply_markup: remitenteKeyboard.reply_markup 
   }); 
@@ -427,13 +426,17 @@ Fecha factura: ${ctx.session.fechaFactura}
       `;
       ctx.session.step = 'confirm';
       
-      return ctx.reply(summary, 
-        Markup.inlineKeyboard([ 
+      // *** CORRECCIÓN APLICADA AQUÍ ***
+      const confirmationKeyboard = Markup.inlineKeyboard([ 
           Markup.button.callback('✅ Confirmar y guardar','confirm_save'), 
           Markup.button.callback('✏️ Cancelar','main') 
-        ]).reply_markup, 
-        { parse_mode: 'Markdown' }
-      );
+      ]).reply_markup;
+
+      return ctx.reply(summary, { 
+        reply_markup: confirmationKeyboard, 
+        parse_mode: 'Markdown' 
+      });
+      // *** FIN DE CORRECCIÓN ***
     }
   }
 
