@@ -1,6 +1,8 @@
 import { promises as fs } from "fs";
 import express from "express";
-import { Telegraf, Markup, session } from "telegraf";
+// Cambiamos la importación: Eliminamos 'session' nativo.
+import { Telegraf, Markup } from "telegraf"; 
+import LocalSession from 'telegraf-session-local'; // <-- Nuevo import para sesión
 import PDFDocument from "pdfkit";
 import { google } from "googleapis";
 import axios from "axios";
@@ -28,7 +30,16 @@ app.listen(PORT, () => console.log(`Express escuchando en ${PORT}`));
 
 // --- Bot ---
 const bot = new Telegraf(BOT_TOKEN);
-bot.use(session());
+
+// 🛑 FIX: Middleware de sesión con persistencia
+// Usamos LocalSession para asegurar que ctx.session está definido
+bot.use(
+  (new LocalSession({ 
+    // Guarda el estado de la sesión en un archivo (mejor que la memoria RAM de Render)
+    database: 'session_db.json' 
+  })).middleware()
+);
+
 const remitenteKeyboard = Markup.inlineKeyboard([
   [Markup.button.callback('1️⃣ El Cholo Repuestos (CUIT: 30716341026)', 'remitente_ElCholo')],
   [Markup.button.callback('2️⃣ Ramirez Cesar y Lois Gustavo S.H. (CUIT: 30711446806)', 'remitente_Ramirez')],
@@ -174,13 +185,24 @@ async function generateTicketPDF(data) {
 }
 
 // --- Flows/keyboards ---
-const replyMain = async (ctx) => { ctx.session = {}; return ctx.reply("Menú principal:", mainKeyboard); };
+const replyMain = async (ctx) => { 
+  ctx.session = {}; // Resetear sesión
+  ctx.session.step = 'main_menu'; // Establecer un estado inicial seguro
+  return ctx.reply("Menú principal:", mainKeyboard); 
+};
 
 bot.start(async (ctx) => {
   ctx.session = {};
+  ctx.session.step = 'main_menu'; // Establecer un estado inicial seguro
   await appendLog(`Comienzo /start chat ${ctx.chat.id}`);
   await ctx.reply("👋 Hola! Soy el bot de devoluciones. ¿Qué querés hacer?", mainKeyboard);
 });
+
+// 📌 Nuevo Handler: Comando /help
+bot.command('help', async (ctx) => {
+  await ctx.reply("Soy el Bot de Devoluciones de Repuestos El Cholo. Solo respondo a los comandos y botones del menú.\n\nComandos:\n/start - Muestra el menú principal.\n/help - Muestra esta ayuda.\n\nPara interactuar, usá los botones del Menú Principal.", mainKeyboard);
+});
+
 
 bot.action('main', async (ctx)=>{ await ctx.answerCbQuery(); await replyMain(ctx); });
 bot.action('registro', async (ctx)=>{ await ctx.answerCbQuery(); ctx.session.flow='registro'; ctx.session.step='chooseRemitente'; await ctx.editMessageText("¿A qué empresa corresponde la devolución?", remitenteKeyboard); });
@@ -287,6 +309,7 @@ Fecha factura: ${ctx.session.fechaFactura}
     }
   }
 
+  // Fallback si no está en un flujo y Gemini no respondió o no está configurado
   await ctx.reply("No entendí eso — elegí una opción:", mainKeyboard);
 });
 
