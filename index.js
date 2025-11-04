@@ -68,7 +68,6 @@ async function initSheets() {
   let key;
   
   try {
-      // Intenta leer el archivo local (Asumimos que el Secret File o el archivo estático están disponibles)
       console.log("Intentando leer credenciales desde archivo local...");
       const keyFileContent = await fs.readFile(GOOGLE_SERVICE_ACCOUNT_FILE, "utf8");
       key = JSON.parse(keyFileContent);
@@ -77,7 +76,12 @@ async function initSheets() {
           throw new Error("Credenciales JSON incompletas o mal formadas.");
       }
       
-      const jwt = new google.auth.JWT(key.client_email, null, key.private_key, ["https://www.googleapis.com/auth/spreadsheets"]);
+      // *** FIX CRÍTICO: SANITIZACIÓN DE CLAVE PRIVADA ***
+      // Reemplaza \\n (cadenas de escape) con caracteres de nueva línea real \n,
+      // necesario cuando el JSON se lee de un entorno que escapa las nuevas líneas.
+      const privateKey = key.private_key.replace(/\\n/g, '\n'); 
+
+      const jwt = new google.auth.JWT(key.client_email, null, privateKey, ["https://www.googleapis.com/auth/spreadsheets"]);
       await jwt.authorize();
       sheetsClient = google.sheets({ version: "v4", auth: jwt });
       
@@ -342,7 +346,7 @@ bot.action('ver_proveedores', async (ctx)=>{
 
 bot.action('ver_estado', async (ctx)=>{ 
   try{ await ctx.answerCbQuery(); } catch(e){} 
-  let sheetsStatus = sheetsInitialized ? "✅ Habilitada" : `❌ Deshabilitada (Archivo de credenciales ${GOOGLE_SERVICE_ACCOUNT_FILE} no encontrado)`;
+  let sheetsStatus = sheetsInitialized ? "✅ Habilitada" : `❌ Deshabilitada (Archivo de credenciales ${GOOGLE_SERVICE_ACCOUNT_FILE} no encontrado o clave inválida)`;
   await ctx.reply(`Estado del bot: ${botStatus}\nIntegración con Sheets: ${sheetsStatus}`); 
 });
 
