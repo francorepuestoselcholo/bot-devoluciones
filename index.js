@@ -46,16 +46,19 @@ bot.use(
   })).middleware()
 );
 
+// Teclados
 const remitenteKeyboard = Markup.inlineKeyboard([
   [Markup.button.callback('1️⃣ El Cholo Repuestos (CUIT: 30716341026)', 'remitente_ElCholo')],
   [Markup.button.callback('2️⃣ Ramirez Cesar y Lois Gustavo S.H. (CUIT: 30711446806)', 'remitente_Ramirez')],
   [Markup.button.callback('3️⃣ Tejada Carlos y Gomez Juan S.H. (CUIT: 30709969699)', 'remitente_Tejada')],
   [Markup.button.callback('↩️ Volver', 'main')]
 ]);
+
 const mainKeyboard = Markup.inlineKeyboard([
   [Markup.button.callback('📦 Registrar devolución', 'registro')],
   [Markup.button.callback('🔍 Consultar devoluciones', 'consultar')],
-  [Markup.button.callback('📋 Ver estado', 'ver_estado'), Markup.button.callback('🏢 Ver proveedores', 'ver_proveedores')],
+  // CAMBIO SOLICITADO: Ver estado cambia a Ticket
+  [Markup.button.callback('🎫 Ticket', 'select_remitente_ticket'), Markup.button.callback('🏢 Ver proveedores', 'ver_proveedores')], 
   [Markup.button.callback('➕ Agregar proveedor', 'agregar_proveedor')]
 ]);
 
@@ -83,7 +86,7 @@ async function initSheets() {
           throw new Error("Credenciales JSON incompletas o mal formadas.");
       }
       
-      // FIX CRÍTICO: SANITIZACIÓN DE CLAVE PRIVADA
+      // FIX CRÍTICO: SANITIZACIÓN DE CLAVE PRIVADA PARA SOPORTE MULTI-ENTORNO
       const privateKey = key.private_key.replace(/\\n/g, '\n'); 
 
       const jwt = new google.auth.JWT(key.client_email, null, privateKey, ["https://www.googleapis.com/auth/spreadsheets"]);
@@ -157,6 +160,36 @@ async function appendRowToSheet(tab, row) {
   });
 }
 
+/**
+ * Lee todas las devoluciones de una pestaña específica.
+ * @param {string} tab - Nombre de la pestaña (ElCholo, Ramirez, Tejada).
+ * @returns {Array<Object>} Lista de objetos de devolución.
+ */
+async function readAllDevolutions(tab) {
+    if (!sheetsInitialized) return [];
+    try {
+        const resp = await sheetsClient.spreadsheets.values.get({ 
+            spreadsheetId: SHEET_ID, 
+            range: `${tab}!A2:I` // Excluye el encabezado
+        });
+        const rows = resp.data.values || [];
+        const headers = ["fecha","proveedor","codigo","descripcion","cantidad","motivo","remito","fechaFactura","usuarioId"];
+        
+        // Mapear filas a objetos para fácil acceso
+        return rows.map(row => {
+            const dev = {};
+            // Asegura que todos los campos existan, usando un string vacío si faltan.
+            headers.forEach((h, i) => dev[h] = row[i] || '');
+            return dev;
+        });
+
+    } catch (e) {
+        console.error(`Error leyendo todas las devoluciones de ${tab}:`, e.message);
+        return [];
+    }
+}
+
+
 async function readProviders() {
   if (!sheetsInitialized) return [];
   // Lectura de proveedores, ignora el encabezado (A2:A)
@@ -207,7 +240,7 @@ async function generateTicketPDF(data) {
       doc.fillColor(BLUE).fontSize(20).font("Helvetica-Bold").text("Ticket de Devolución", { align: "right" });
       doc.moveDown(0.5);
       doc.fillColor("black").fontSize(11).font("Helvetica");
-      doc.text(`Fecha registro: ${new Date().toLocaleString()}`, { align: "right" });
+      doc.text(`Fecha registro: ${data.fecha || new Date().toLocaleString()}`, { align: "right" }); // Usa la fecha registrada si existe
       doc.moveDown(1);
 
       // box with details
@@ -286,6 +319,98 @@ bot.action('registro', async (ctx)=>{
   }); 
 });
 
+// NUEVA ACCIÓN: Primer paso para buscar un ticket (seleccionar remitente)
+bot.action('select_remitente_ticket', async (ctx) => {
+    try { await ctx.answerCbQuery(); } catch(e){} 
+
+    if (!sheetsInitialized) {
+        return ctx.reply("❌ Función no disponible. La integración con Google Sheets está deshabilitada.", mainKeyboard.reply_markup);
+    }
+    
+    // Teclado para elegir remitente para buscar tickets
+    const ticketRemitenteKeyboard = Markup.inlineKeyboard([
+        [Markup.button.callback('El Cholo Repuestos', 'list_devoluciones_remitente_ElCholo')],
+        [Markup.button.callback('Ramirez Cesar y Lois S.H.', 'list_devoluciones_remitente_Ramirez')],
+        [Markup.button.callback('Tejada Carlos y Gomez S.H.', 'list_devoluciones_remitente_Tejada')],
+        [Markup.button.callback('↩️ Volver', 'main')]
+    ]);
+
+    await ctx.editMessageText("Seleccioná la empresa de la cual querés recuperar un ticket:", {
+        reply_markup: ticketRemitenteKeyboard.reply_markup
+    });
+});
+
+// NUEVA ACCIÓN: Listar las últimas devoluciones de la empresa seleccionada
+bot.action(/list_devoluciones_remitente_(.+)/, async (ctx) => {
+    try { await ctx.answerCbQuery(); } catch(e){} 
+    const remitente = ctx.match[1];
+    
+    await ctx.reply(`Buscando las últimas 5 devoluciones de *${remitente}*...`, { parse_mode: 'Markdown' });
+
+    const devoluciones = await readAllDevolutions(remitente);
+    const lastFive = devoluciones.slice(-5).reverse(); // Últimos 5, en orden descendente (más nuevo primero)
+    
+    if (lastFive.length === 0) {
+        return ctx.reply(`No se encontraron devoluciones registradas para *${remitente}*.`, { parse_mode: 'Markdown', reply_markup: mainKeyboard.reply_markup });
+    }
+
+    // Guardar las devoluciones en la sesión para recuperarlas después
+    ctx.session.lastDevolutions = lastFive;
+    ctx.session.ticketRemitente = remitente;
+
+    const buttons = lastFive.map((dev, index) => {
+        // Formato: Fecha - Código - Cantidad - Remito/Factura
+        const label = `${dev.fecha.split(' ')[0]} | ${dev.codigo.substring(0, 15)} | ${dev.cantidad}u | N°${dev.remito}`;
+        return [Markup.button.callback(label, `get_ticket_${index}`)];
+    });
+
+    buttons.push([Markup.button.callback('↩️ Volver', 'main')]);
+
+    await ctx.reply(`Seleccioná la devolución de *${remitente}* para recuperar el ticket PDF:`, {
+        parse_mode: 'Markdown',
+        reply_markup: Markup.inlineKeyboard(buttons).reply_markup
+    });
+});
+
+// NUEVA ACCIÓN: Generar y enviar el PDF del ticket seleccionado
+bot.action(/get_ticket_(\d+)/, async (ctx) => {
+    try { await ctx.answerCbQuery(); } catch(e){} 
+    const index = parseInt(ctx.match[1]);
+    const devoluciones = ctx.session.lastDevolutions;
+    const remitente = ctx.session.ticketRemitente;
+    
+    if (!devoluciones || !devoluciones[index] || !remitente) {
+        await ctx.reply("❌ Error al recuperar los datos del ticket. Intentá de nuevo desde el menú principal.");
+        return replyMain(ctx);
+    }
+
+    const ticketData = { 
+        ...devoluciones[index], // Contiene: fecha, proveedor, codigo, descripcion, cantidad, motivo, remito, fechaFactura, usuarioId
+        remitente: remitente // Necesitamos el remitente para el PDF
+    };
+    
+    await ctx.reply("Generando ticket PDF...");
+
+    try {
+        const pdfBuf = await generateTicketPDF(ticketData);
+
+        // Envío del ticket PDF al usuario
+        await ctx.replyWithDocument({ 
+            source: pdfBuf, 
+            filename: `ticket_devolucion_${remitente}_${ticketData.codigo}_${Date.now()}.pdf` 
+        }, { caption: "Aquí tenés el ticket PDF solicitado." });
+
+    } catch (e) {
+        console.error("Error generando/enviando PDF al usuario:", e.message);
+        await ctx.reply("❌ Ocurrió un error al generar el ticket PDF. Avisá al administrador.");
+    }
+
+    // Limpiar sesión y volver al menú
+    ctx.session = {};
+    return replyMain(ctx);
+});
+
+
 bot.action(/remitente_(.+)/, async (ctx)=>{
   try{ await ctx.answerCbQuery(); } catch(e){} 
   const remitente = ctx.match[1];
@@ -320,7 +445,8 @@ bot.action(/prov_(\d+)/, async (ctx)=>{
   const idx = Number(ctx.match[1]);
   const prov = ctx.session.provList?.[idx];
   ctx.session.proveedor = prov || 'N/D';
-  ctx.session.step = 'codigo';
+  // Vuelve al flujo manual: pide el código
+  ctx.session.step = 'codigo'; 
   await ctx.editMessageText(`Proveedor seleccionado: *${ctx.session.proveedor}*.\nEnviá el *código del producto* (texto).`, { parse_mode: 'Markdown' });
 });
 
@@ -375,11 +501,6 @@ bot.action('ver_proveedores', async (ctx)=>{
   await ctx.reply(`Proveedores:\n${formatted}`); 
 });
 
-bot.action('ver_estado', async (ctx)=>{ 
-  try{ await ctx.answerCbQuery(); } catch(e){} 
-  let sheetsStatus = sheetsInitialized ? "✅ Habilitada" : `❌ Deshabilitada. Detalle: ${sheetsErrorDetail}`;
-  await ctx.reply(`Estado del bot: ${botStatus}\nIntegración con Sheets: ${sheetsStatus}`); 
-});
 
 bot.on('text', async (ctx)=>{
   const text = ctx.message.text?.trim();
@@ -405,14 +526,36 @@ bot.on('text', async (ctx)=>{
   }
 
   if (s.flow === 'registro' || s.step) {
-    if (s.step === 'proveedor_manual') { ctx.session.proveedor = text; ctx.session.step = 'codigo'; return ctx.reply("Perfecto. Ahora enviá el código del producto."); }
+    if (s.step === 'proveedor_manual') { ctx.session.proveedor = text; ctx.session.step = 'codigo'; return ctx.reply("Perfecto. Ahora enviá el *código del producto* (texto)."); }
     if (s.step === 'codigo') { ctx.session.codigo = text; ctx.session.step = 'descripcion'; return ctx.reply("Descripción del producto:"); }
     if (s.step === 'descripcion') { ctx.session.descripcion = text; ctx.session.step = 'cantidad'; return ctx.reply("Cantidad (número):"); }
-    if (s.step === 'cantidad') { ctx.session.cantidad = text; ctx.session.step = 'motivo'; return ctx.reply("Motivo de la devolución:"); }
+    
+    if (s.step === 'cantidad') { 
+      const cantidad = text;
+      // Validación: debe ser un número entero positivo (usa regex para evitar decimales)
+      if (!/^\d+$/.test(cantidad) || parseInt(cantidad) <= 0) {
+        return ctx.reply("⚠️ Cantidad inválida. Por favor, enviá una cantidad que sea un *número entero positivo*:", { parse_mode: 'Markdown' }); 
+      }
+      ctx.session.cantidad = cantidad; 
+      ctx.session.step = 'motivo'; 
+      return ctx.reply("Motivo de la devolución:"); 
+    }
+    
     if (s.step === 'motivo') { ctx.session.motivo = text; ctx.session.step = 'remito'; return ctx.reply("Número de remito/factura:"); }
-    if (s.step === 'remito') { ctx.session.remito = text; ctx.session.step = 'fechaFactura'; return ctx.reply("Fecha de factura (DD/MM/AAAA):"); }
+    if (s.step === 'remito') { 
+      ctx.session.remito = text; 
+      ctx.session.step = 'fechaFactura'; 
+      return ctx.reply("Fecha de factura (DD/MM/AAAA):"); 
+    }
+    
     if (s.step === 'fechaFactura') {
-      ctx.session.fechaFactura = text;
+      const fechaFactura = text;
+      // Validación de formato DD/MM/AAAA (básico)
+      if (!/^\d{2}\/\d{2}\/\d{4}$/.test(fechaFactura)) {
+        return ctx.reply("⚠️ Formato de fecha incorrecto. Por favor, usá el formato *DD/MM/AAAA* (ej: 01/10/2023):", { parse_mode: 'Markdown' });
+      }
+
+      ctx.session.fechaFactura = fechaFactura;
       const summary = `*Resumen de la devolución:*
 
 Remitente: *${ctx.session.remitente}*
@@ -426,7 +569,7 @@ Fecha factura: ${ctx.session.fechaFactura}
       `;
       ctx.session.step = 'confirm';
       
-      // *** CORRECCIÓN APLICADA AQUÍ ***
+      // Teclado de confirmación
       const confirmationKeyboard = Markup.inlineKeyboard([ 
           Markup.button.callback('✅ Confirmar y guardar','confirm_save'), 
           Markup.button.callback('✏️ Cancelar','main') 
@@ -436,17 +579,14 @@ Fecha factura: ${ctx.session.fechaFactura}
         reply_markup: confirmationKeyboard, 
         parse_mode: 'Markdown' 
       });
-      // *** FIN DE CORRECCIÓN ***
     }
   }
 
   // fallback: Gemini AI
   if (GEMINI_API_KEY) {
     try {
-      // Cambio CRÍTICO: 'config' ha sido cambiado a 'generationConfig'
       const payload = {
           contents: [{ parts: [{ text: text }] }],
-          // Añadimos un systemInstruction para darle contexto de bot de repuestos
           systemInstruction: {
               parts: [{ text: "Eres un asistente amigable y formal que responde preguntas generales, pero siempre sugiere usar el menú principal para las funciones del bot de devoluciones de Repuestos El Cholo." }]
           },
@@ -469,7 +609,6 @@ Fecha factura: ${ctx.session.fechaFactura}
       if (e.response) {
         // El servidor respondió con un código de estado fuera de 2xx
         console.error(`Error Gemini: Status ${e.response.status}. Data:`, e.response.data);
-        // Si el status es 400, la data debería decir si es por API key o estructura de payload.
         await ctx.reply(`⚠️ Error de API: No pude procesar tu solicitud con el asistente (código ${e.response.status}). Por favor, revisá la consola para el detalle del error.`, mainKeyboard.reply_markup);
       } else if (e.request) {
         // La solicitud fue hecha pero no hubo respuesta
@@ -495,7 +634,9 @@ bot.action('confirm_save', async (ctx)=>{
   if (!s || !s.remitente) return ctx.reply("No hay datos para guardar. Volvé al menú.", mainKeyboard.reply_markup);
   
   const tab = s.remitente;
-  const row = [ new Date().toLocaleString(), s.proveedor||'', s.codigo||'', s.descripcion||'', s.cantidad||'', s.motivo||'', s.remito||'', s.fechaFactura||'', String(ctx.chat.id) ];
+  // Obtenemos la fecha de registro ANTES de guardar
+  const registrationDate = new Date().toLocaleString(); 
+  const row = [ registrationDate, s.proveedor||'', s.codigo||'', s.descripcion||'', s.cantidad||'', s.motivo||'', s.remito||'', s.fechaFactura||'', String(ctx.chat.id) ];
 
   let sheetsError = false;
   
@@ -515,28 +656,49 @@ bot.action('confirm_save', async (ctx)=>{
   }
 
   // Generación y envío del PDF (siempre intentamos generar el PDF independientemente del Sheets)
+  let pdfSent = false;
   try {
-    const ticketData = { remitente: tab, proveedor: s.proveedor, codigo: s.codigo, descripcion: s.descripcion, cantidad: s.cantidad, motivo: s.motivo, remito: s.remito, fechaFactura: s.fechaFactura, usuario: ctx.from?.first_name || ctx.from?.username || String(ctx.chat.id) };
+    // Usamos la fecha real de registro para el ticket
+    const ticketData = { 
+        remitente: tab, 
+        proveedor: s.proveedor, 
+        codigo: s.codigo, 
+        descripcion: s.descripcion, 
+        cantidad: s.cantidad, 
+        motivo: s.motivo, 
+        remito: s.remito, 
+        fechaFactura: s.fechaFactura, 
+        usuario: ctx.from?.first_name || ctx.from?.username || String(ctx.chat.id),
+        fecha: registrationDate // Fecha de registro completa
+    };
     const pdfBuf = await generateTicketPDF(ticketData);
 
+    // 1. ENVÍO AL USUARIO QUE CONFIRMÓ (CRÍTICO)
+    await ctx.replyWithDocument({ source: pdfBuf, filename: `ticket_${Date.now()}.pdf` });
+    pdfSent = true;
+
+    // 2. ENVÍO AL OWNER (Notificación)
     if (OWNER_CHAT_ID) {
       try {
-        await bot.telegram.sendDocument(OWNER_CHAT_ID, { source: pdfBuf, filename: `ticket_${Date.now()}.pdf` }, { caption: `Nueva devolución registrada en ${tab} (Registro en Sheets: ${sheetsError ? 'FALLÓ' : sheetsInitialized ? 'OK' : 'OFF'}).` });
+        // Generamos el buffer nuevamente para el owner para evitar problemas si Telegraf ya consumió el buffer.
+        // Esto es necesario para asegurar que el documento se adjunte correctamente en ambos envíos.
+        const pdfBufForOwner = await generateTicketPDF(ticketData); 
+        await bot.telegram.sendDocument(OWNER_CHAT_ID, { source: pdfBufForOwner, filename: `ticket_${Date.now()}_owner.pdf` }, { caption: `Nueva devolución registrada en ${tab} (Registro en Sheets: ${sheetsError ? 'FALLÓ' : sheetsInitialized ? 'OK' : 'OFF'}).` });
       } catch(e){ console.error("Error enviando notificación al owner:", e.message); }
     }
     
-    if (!sheetsError) { // Si el registro de Sheets fue OK o si Sheets estaba deshabilitado, enviamos el mensaje final de éxito del flujo.
+    // Mensaje final
+    if (!sheetsError) { 
       await ctx.reply("Recordá conservar tu ticket PDF para seguimiento.");
     }
 
   } catch(e) {
     console.error("Error generando/enviando PDF:", e.message);
-    // Solo enviamos un mensaje adicional de error si Sheets *también* falló. Si Sheets funcionó, solo el PDF falló, que ya está registrado.
-    if (sheetsError || !sheetsInitialized) {
-        await ctx.reply("❌ Error al generar el ticket PDF. Avisá al administrador.");
-    } else {
-        await ctx.reply("⚠️ Atención: Error al generar el ticket PDF. La devolución fue registrada en Google Sheets, pero el ticket no pudo generarse.");
+    if (!pdfSent) { // Solo si no se pudo enviar el documento al usuario
+        // Si falló el PDF, notificamos
+        await ctx.reply("❌ Error al generar o enviar el ticket PDF. La devolución *fue* registrada en Google Sheets (si estaba habilitado), pero el ticket PDF falló. Avisá al administrador.");
     }
+    // Si Sheets falló, el mensaje de error ya se envió antes.
   }
 
   ctx.session = {};
@@ -549,12 +711,10 @@ bot.action('confirm_save', async (ctx)=>{
   await initSheets(); 
 
   if (WEBHOOK_URL) {
-      // Modo Webhook (Recomendado para producción para evitar error 409)
+      // Modo Webhook (Recomendado para producción)
       const secretPath = `/telegraf/${BOT_TOKEN}`; 
       
       // 1. Configurar Express para escuchar las actualizaciones de Telegram
-      // IMPORTANTE: Asegúrate de que Express esté configurado para parsear JSON si usas Telegraf > 4.10.0
-      // En este caso, Telegraf lo maneja internamente con bot.webhookCallback(path)
       app.use(bot.webhookCallback(secretPath));
       
       // 2. Establecer el webhook en Telegram
@@ -563,7 +723,7 @@ bot.action('confirm_save', async (ctx)=>{
       console.log(`✅ Bot en modo Webhook. Escuchando en ${WEBHOOK_URL}${secretPath}`);
       botStatus = "conectado (webhook)";
   } else {
-      // Modo Polling (Usado para desarrollo, puede causar error 409 en despliegues con múltiples procesos)
+      // Modo Polling (Usado para desarrollo/local)
       console.warn("⚠️ WEBHOOK_URL no definido. Usando Telegraf Polling. Si ocurre un error 409, definí WEBHOOK_URL en tu entorno de despliegue.");
       await bot.launch();
       botStatus = "conectado (polling)";
@@ -571,7 +731,7 @@ bot.action('confirm_save', async (ctx)=>{
 
   console.log("✅ Bot de Telegram iniciado.");
   
-  // SOLUCIÓN: Adjuntar los manejadores de detención SÓLO después de que el bot se haya iniciado correctamente.
+  // Manejadores de detención
   process.once('SIGINT', ()=>bot.stop('SIGINT'));
   process.once('SIGTERM', ()=>bot.stop('SIGTERM'));
 })();
