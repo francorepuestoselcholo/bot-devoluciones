@@ -727,11 +727,11 @@ bot.action('confirm_save', async (ctx)=>{
       console.warn("⚠️ WEBHOOK_URL no definido. Usando Telegraf Polling. Si ocurre un error 409, definí WEBHOOK_URL en tu entorno de despliegue.");
       await bot.launch();
       botStatus = "conectado (polling)";
+      
+      // CORRECCIÓN: Los manejadores de detención solo se añaden en modo Polling
+      process.once('SIGINT', ()=>bot.stop('SIGINT'));
+      process.once('SIGTERM', ()=>bot.stop('SIGTERM'));
   }
 
   console.log("✅ Bot de Telegram iniciado.");
-  
-  // Manejadores de detención
-  process.once('SIGINT', ()=>bot.stop('SIGINT'));
-  process.once('SIGTERM', ()=>bot.stop('SIGTERM'));
 })();
