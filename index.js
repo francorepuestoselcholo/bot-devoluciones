@@ -1,145 +1,128 @@
 import { promises as fs } from "fs";
-import { Telegraf, Markup } from "telegraf"; 
-import LocalSession from 'telegraf-session-local'; 
+import { Telegraf, Markup } from "telegraf";
+import LocalSession from "telegraf-session-local";
 import PDFDocument from "pdfkit";
 import { google } from "googleapis";
 import axios from "axios";
 import dotenv from "dotenv";
+
 dotenv.config();
 
-// --- CONFIG/ENV ---
-const BOT_TOKEN = process.env.BOT_TOKEN; 
-const OWNER_CHAT_ID = process.env.OWNER_CHAT_ID || null; // ID del chat del administrador
-
-// 馃洃 隆ATENCI脫N! REEMPLAZA ESTO con el ID real de tu hoja de c谩lculo.
-const SHEET_ID = process.env.GOOGLE_SHEET_ID || "1BFGsZaUwvxV4IbGgXNOp5IrMYLVn-czVYpdxTleOBgo"; 
-// Credenciales: Este archivo debe estar en la misma carpeta.
-const GOOGLE_SERVICE_ACCOUNT_FILE = "./gen-lang-client-0104843305-3b7345de7ec0.json";
-
+// --- CONFIG / ENV ---
+const BOT_TOKEN = process.env.BOT_TOKEN;
+const OWNER_CHAT_ID = process.env.OWNER_CHAT_ID || null;
+const SHEET_ID =
+  process.env.GOOGLE_SHEET_ID ||
+  "1BFGsZaUwvxV4IbGgXNOp5IrMYLVn-czVYpdxTleOBgo";
+const GOOGLE_SERVICE_ACCOUNT_FILE =
+  "./gen-lang-client-0104843305-3b7345de7ec0.json";
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || null;
 const LOG_FILE = "logs.txt";
-const LOGO_PATH = "./REPUESTOS EL CHOLO LOGO.png"; // RUTA DEL LOGO (DEBE ESTAR SUBIDO)
+const LOGO_PATH = "./REPUESTOS EL CHOLO LOGO.png";
 
-if (!BOT_TOKEN) throw new Error("FATAL: BOT_TOKEN no definido en variables de entorno.");
+if (!BOT_TOKEN)
+  throw new Error("FATAL: BOT_TOKEN no definido en variables de entorno.");
 
-// --- GLOBALES Y CLIENTES ---
+// --- GLOBALES ---
 let sheets;
 let sheetsInitialized = false;
 let sheetsError = false;
 
+// --- CONFIGURAR BOT ---
 const bot = new Telegraf(BOT_TOKEN);
-// Usamos telegraf-session-local para guardar el estado de la conversaci贸n (la sesi贸n)
-const localSession = new LocalSession({ database: 'session_db.json' });
+const localSession = new LocalSession({ database: "session_db.json" });
 bot.use(localSession.middleware());
 
-// --- FUNCIONES DE LOG Y UTILIDAD ---
+// --- FUNCIONES AUXILIARES ---
 
-/**
- * A帽ade un mensaje al archivo de log (logs.txt).
- * @param {string} message Mensaje a loguear.
- */
 async function appendLog(message) {
   const timestamp = new Date().toISOString();
   const logEntry = `[${timestamp}] ${message}\n`;
   try {
-    await fs.appendFile(LOG_FILE, logEntry, 'utf8');
+    await fs.appendFile(LOG_FILE, logEntry, "utf8");
   } catch (err) {
     console.error("Error escribiendo en el log:", err.message);
   }
 }
 
-/**
- * Genera un buffer de PDF para el ticket de devoluci贸n.
- * (MOCK: Asumo que esta funci贸n existe en tu c贸digo completo)
- */
+// Genera un PDF simple de ejemplo
 async function generateTicketPDF(data) {
-    // --- MOCK DE PDF ---
-    return new Promise((resolve) => {
-        const doc = new PDFDocument();
-        const buffers = [];
-        doc.on('data', buffers.push.bind(buffers));
-        doc.on('end', () => {
-            const pdfBuffer = Buffer.concat(buffers);
-            resolve(pdfBuffer);
-        });
-
-        doc.fontSize(16).text('TICKET DE DEVOLUCI脫N', { align: 'center' });
-        doc.moveDown();
-        doc.fontSize(10).text(`Proveedor: ${data.proveedor}`);
-        doc.text(`C贸digo: ${data.codigo}`);
-        doc.text(`Descripci贸n: ${data.descripcion}`);
-        doc.end();
+  return new Promise((resolve) => {
+    const doc = new PDFDocument();
+    const buffers = [];
+    doc.on("data", buffers.push.bind(buffers));
+    doc.on("end", () => {
+      const pdfBuffer = Buffer.concat(buffers);
+      resolve(pdfBuffer);
     });
+
+    doc.fontSize(16).text("TICKET DE DEVOLUCIóN", { align: "center" });
+    doc.moveDown();
+    doc.fontSize(10).text(`Proveedor: ${data.proveedor}`);
+    doc.text(`Código: ${data.codigo}`);
+    doc.text(`Descripción: ${data.descripcion}`);
+    doc.text(`Cantidad: ${data.cantidad}`);
+    doc.text(`Motivo: ${data.motivo}`);
+    doc.text(`Remito: ${data.remito}`);
+    doc.text(`Fecha Factura: ${data.fechaFactura}`);
+    doc.end();
+  });
 }
 
-/**
- * Responde con el men煤 principal.
- */
 async function replyMain(ctx) {
-    const keyboard = Markup.inlineKeyboard([
-        [Markup.button.callback("Registrar Devoluci贸n", "registrar_devolucion")]
-    ]);
-    return ctx.reply("Seleccion谩 una opci贸n:", keyboard);
+  const keyboard = Markup.inlineKeyboard([
+    [Markup.button.callback("Registrar Devolución", "registrar_devolucion")],
+  ]);
+  return ctx.reply("Seleccioná una opción:", keyboard);
 }
 
+// --- GOOGLE SHEETS ---
 
-// --- FUNCIONES DE GOOGLE SHEETS (CR脥TICAS PARA LA CONEXI脫N) ---
-
-/**
- * Funci贸n que inicializa el cliente de Google Sheets.
- */
 async function initSheets() {
-  // 1. Cargar las credenciales del archivo JSON
   try {
-    const EXAMPLE_SHEET_ID = "1BFGsZaUwvxV4IbGgXNOp5IrMYLVn-czVYpdxTleOBgo";
+    const EXAMPLE_SHEET_ID =
+      "1BFGsZaUwvxV4IbGgXNOp5IrMYLVn-czVYpdxTleOBgo";
     if (SHEET_ID === EXAMPLE_SHEET_ID) {
-        console.error("鉂?ERROR: Est谩s usando el ID de hoja de c谩lculo de EJEMPLO. Reempl谩zalo por tu ID real en la variable SHEET_ID.");
-        sheetsError = true;
-        return;
+      console.error(
+        "? ERROR: Estás usando el ID de hoja de cálculo de EJEMPLO. Reemplazalo por tu ID real en la variable SHEET_ID."
+      );
+      sheetsError = true;
+      return;
     }
 
-    const credentials = JSON.parse(await fs.readFile(GOOGLE_SERVICE_ACCOUNT_FILE, "utf8"));
-    
-    // 2. Autenticar usando Google Service Account
+    const credentials = JSON.parse(
+      await fs.readFile(GOOGLE_SERVICE_ACCOUNT_FILE, "utf8")
+    );
+
     const auth = new google.auth.GoogleAuth({
       credentials,
       scopes: ["https://www.googleapis.com/auth/spreadsheets"],
     });
 
-    // 3. Crear el cliente de Sheets
     sheets = google.sheets({ version: "v4", auth });
     sheetsInitialized = true;
-    console.log("鉁?Google Sheets inicializado correctamente.");
-
+    console.log("? Google Sheets inicializado correctamente.");
   } catch (error) {
-    console.error("鉂?ERROR FATAL al inicializar Google Sheets:", error.message);
-    console.error("鉀旓笍 FALL脫 LA CONEXI脫N A SHEETS. Verific谩:");
-    console.error("   1. Que el archivo de credenciales existe: " + GOOGLE_SERVICE_ACCOUNT_FILE);
-    console.error("   2. Que compartiste la hoja de c谩lculo con el email de la cuenta de servicio.");
+    console.error("? ERROR FATAL al inicializar Google Sheets:", error.message);
+    console.error("?? FALLó LA CONEXIóN A SHEETS. Verificá:");
+    console.error("   1. Que el archivo de credenciales existe:", GOOGLE_SERVICE_ACCOUNT_FILE);
+    console.error("   2. Que compartiste la hoja con el email del servicio de cuenta.");
     console.error("   3. Que el SHEET_ID es correcto.");
     sheetsError = true;
     sheetsInitialized = false;
   }
 }
 
-/**
- * Funci贸n que a帽ade una fila de datos a la hoja de c谩lculo de Google.
- * @param {string} sheetName Nombre de la pesta帽a (ej. 'DEVOLUCIONES')
- * @param {Array<string|number>} rowData Array de valores a insertar.
- */
 async function appendRowToSheet(sheetName, rowData) {
   if (!sheetsInitialized || sheetsError || !sheets) {
-    throw new Error("El cliente de Google Sheets no est谩 inicializado o fall贸.");
+    throw new Error("El cliente de Google Sheets no está inicializado o falló.");
   }
-  
-  // Esta es la llamada a la API que realiza el guardado
+
   await sheets.spreadsheets.values.append({
     spreadsheetId: SHEET_ID,
-    range: `${sheetName}!A:A`, // Rango abierto para a帽adir la nueva fila al final
+    range: `${sheetName}!A:A`,
     valueInputOption: "USER_ENTERED",
-    resource: {
-      values: [rowData],
-    },
+    resource: { values: [rowData] },
   });
 }
 
@@ -148,187 +131,169 @@ async function appendRowToSheet(sheetName, rowData) {
 bot.start(replyMain);
 
 bot.action("registrar_devolucion", (ctx) => {
-    // Inicia el proceso de recolecci贸n de datos
-    ctx.session.step = 'awaiting_proveedor';
-    ctx.session.data = {};
-    return ctx.reply("Ingres谩 el nombre del proveedor:");
+  ctx.session.step = "awaiting_proveedor";
+  ctx.session.data = {};
+  return ctx.reply("Ingresá el nombre del proveedor:");
 });
 
-// Mock de la l贸gica de pasos (solo para que sea runnable)
-bot.on('text', async (ctx) => {
-    const step = ctx.session?.step;
-    const text = ctx.message.text.trim();
+bot.on("text", async (ctx) => {
+  const step = ctx.session?.step;
+  const text = ctx.message.text.trim();
 
-    if (step === 'awaiting_proveedor') {
-        ctx.session.data.proveedor = text;
-        ctx.session.step = 'awaiting_codigo';
-        return ctx.reply("Ingres谩 el c贸digo del art铆culo:");
-    } else if (step === 'awaiting_codigo') {
-        ctx.session.data.codigo = text;
-        ctx.session.step = 'awaiting_descripcion';
-        return ctx.reply("Ingres谩 la descripci贸n:");
-    } else if (step === 'awaiting_descripcion') {
-        ctx.session.data.descripcion = text;
-        ctx.session.step = 'awaiting_cantidad';
-        return ctx.reply("Ingres谩 la cantidad:");
-    } else if (step === 'awaiting_cantidad') {
-        ctx.session.data.cantidad = text;
-        ctx.session.step = 'awaiting_motivo';
-        const keyboard = Markup.inlineKeyboard([
-            [Markup.button.callback("鉂?Mal Pedido", "motivo_Mal_Pedido")],
-            [Markup.button.callback("馃敡 Fallado", "motivo_Fallado")],
-            [Markup.button.callback("馃摝 Error de Env铆o", "motivo_Error_Env铆o")]
-        ]);
-        return ctx.reply("Seleccion谩 el motivo de la devoluci贸n:", keyboard);
-    } 
-    // Si no es un paso de recolecci贸n, puede ser un comando desconocido o texto libre
-    return ctx.reply("Comando desconocido. Us谩 /start para iniciar.");
+  if (step === "awaiting_proveedor") {
+    ctx.session.data.proveedor = text;
+    ctx.session.step = "awaiting_codigo";
+    return ctx.reply("Ingresá el código del artículo:");
+  } else if (step === "awaiting_codigo") {
+    ctx.session.data.codigo = text;
+    ctx.session.step = "awaiting_descripcion";
+    return ctx.reply("Ingresá la descripción:");
+  } else if (step === "awaiting_descripcion") {
+    ctx.session.data.descripcion = text;
+    ctx.session.step = "awaiting_cantidad";
+    return ctx.reply("Ingresá la cantidad:");
+  } else if (step === "awaiting_cantidad") {
+    ctx.session.data.cantidad = text;
+    ctx.session.step = "awaiting_motivo";
+    const keyboard = Markup.inlineKeyboard([
+      [Markup.button.callback("? Mal Pedido", "motivo_Mal_Pedido")],
+      [Markup.button.callback("?? Fallado", "motivo_Fallado")],
+      [Markup.button.callback("?? Error de Envío", "motivo_Error_Envío")],
+    ]);
+    return ctx.reply("Seleccioná el motivo de la devolución:", keyboard);
+  }
+
+  return ctx.reply("Comando desconocido. Usá /start para iniciar.");
 });
 
-
-// Manejador para los motivos predefinidos (buttons)
 bot.action(/^motivo_/, (ctx) => {
-    // Extrae el motivo del callback_data, quitando el prefijo 'motivo_'
-    const motivo = ctx.match[0].substring(7).replace(/_/g, ' '); 
-    ctx.session.data.motivo = motivo;
-    ctx.session.step = 'awaiting_remito';
-    // Se elimina el teclado inline despu茅s de la selecci贸n
-    ctx.editMessageReplyMarkup(null); 
-    return ctx.reply(`Motivo seleccionado: ${motivo}. Ahora ingres谩 el n煤mero de remito:`);
+  const motivo = ctx.match[0].substring(7).replace(/_/g, " ");
+  ctx.session.data.motivo = motivo;
+  ctx.session.step = "awaiting_remito";
+  ctx.editMessageReplyMarkup(null);
+  return ctx.reply(`Motivo seleccionado: ${motivo}. Ahora ingresá el número de remito:`);
 });
 
-// Manejador para el remito
-bot.on('text', async (ctx) => {
-    if (ctx.session?.step === 'awaiting_remito') {
-        ctx.session.data.remito = ctx.message.text.trim();
-        ctx.session.step = 'awaiting_fechaFactura';
-        return ctx.reply("Ingres谩 la fecha de la factura (ej: DD/MM/AAAA):");
-    } else if (ctx.session?.step === 'awaiting_fechaFactura') {
-        ctx.session.data.fechaFactura = ctx.message.text.trim();
-        ctx.session.step = 'confirm_and_save'; // Cambio de paso
-        
-        const s = ctx.session.data;
-        const resumen = `\n\nResumen:\nProveedor: ${s.proveedor}\nC贸digo: ${s.codigo}\nDesc.: ${s.descripcion}\nCant.: ${s.cantidad}\nMotivo: ${s.motivo}\nRemito: ${s.remito}\nFecha Factura: ${s.fechaFactura}`;
-        
-        const keyboard = Markup.inlineKeyboard([
-            [Markup.button.callback("鉁?Confirmar y Guardar", "guardar_devolucion")],
-            [Markup.button.callback("馃攧 Cancelar", "cancelar")]
-        ]);
+bot.on("text", async (ctx) => {
+  if (ctx.session?.step === "awaiting_remito") {
+    ctx.session.data.remito = ctx.message.text.trim();
+    ctx.session.step = "awaiting_fechaFactura";
+    return ctx.reply("Ingresá la fecha de la factura (ej: DD/MM/AAAA):");
+  } else if (ctx.session?.step === "awaiting_fechaFactura") {
+    ctx.session.data.fechaFactura = ctx.message.text.trim();
+    ctx.session.step = "confirm_and_save";
 
-        return ctx.reply(`Datos listos para guardar: ${resumen}\n\n驴Deseas confirmar la devoluci贸n?`, keyboard);
-    }
-    // Si el texto llega aqu铆 y no est谩 en un estado espec铆fico, lo ignora o maneja en el listener gen茅rico.
+    const s = ctx.session.data;
+    const resumen = `\n\nResumen:\nProveedor: ${s.proveedor}\nCódigo: ${s.codigo}\nDescripción: ${s.descripcion}\nCantidad: ${s.cantidad}\nMotivo: ${s.motivo}\nRemito: ${s.remito}\nFecha Factura: ${s.fechaFactura}`;
+
+    const keyboard = Markup.inlineKeyboard([
+      [Markup.button.callback("? Confirmar y Guardar", "guardar_devolucion")],
+      [Markup.button.callback("?? Cancelar", "cancelar")],
+    ]);
+
+    return ctx.reply(
+      `Datos listos para guardar: ${resumen}\n\n?Deseás confirmar la devolución?`,
+      keyboard
+    );
+  }
 });
 
-// Manejador de cancelaci贸n
 bot.action("cancelar", (ctx) => {
-    ctx.session = {};
-    return replyMain(ctx);
-});
-
-// --- EL MANEJADOR DE GUARDADO FINAL (AQU脥 ESTABA EL POSIBLE FALLO) ---
-
-bot.action("guardar_devolucion", async (ctx) => {
-  const s = ctx.session.data;
-  const tab = "DEVOLUCIONES"; 
-
-  // 馃洃 NUEVA VERIFICACI脫N DE CONEXI脫N
-  if (sheetsError) {
-    await ctx.editMessageText("鉂?ERROR CR脥TICO: El bot no pudo conectarse a Google Sheets. Verific谩 los logs del servidor para ver el error de autenticaci贸n/permisos.");
-    ctx.session = {};
-    return replyMain(ctx);
-  }
-
-  // Estructura de la fila a guardar (Aseg煤rate de que coincida con tus columnas en Sheets)
-  const row = [ 
-    new Date().toLocaleString('es-AR', { timeZone: 'America/Argentina/Buenos_Aires' }), // Columna A: Timestamp 
-    ctx.from?.first_name || ctx.from?.username || String(ctx.chat.id), // Columna B: Usuario de Telegram
-    s.proveedor || '', 
-    s.codigo || '', 
-    s.descripcion || '', 
-    s.cantidad || '', 
-    s.motivo || '', 
-    s.remito || '', 
-    s.fechaFactura || '', 
-    String(ctx.chat.id) 
-  ];
-
-  let pdfSent = false;
-  
-  try {
-    // 1. Guardar en Google Sheets (Si esto falla, se va al catch)
-    await appendRowToSheet(tab, row);
-    
-    await ctx.editMessageText("鉁?Devoluci贸n registrada correctamente. Generando ticket..."); // Edita el mensaje de confirmaci贸n
-    await appendLog(`Devoluci贸n guardada en ${tab} por ${ctx.from?.first_name} (${ctx.chat.id})`);
-
-    // 2. Generar y enviar el ticket PDF
-    const ticketData = { 
-        remitente: tab, 
-        proveedor: s.proveedor, 
-        codigo: s.codigo, 
-        descripcion: s.descripcion, 
-        cantidad: s.cantidad, 
-        motivo: s.motivo, 
-        remito: s.remito, 
-        fechaFactura: s.fechaFactura, 
-        usuario: ctx.from?.first_name || ctx.from?.username || String(ctx.chat.id) 
-    };
-    
-    const pdfBuf = await generateTicketPDF(ticketData);
-
-    // Env铆o al usuario
-    await ctx.replyWithDocument({ source: pdfBuf, filename: `ticket_${Date.now()}.pdf` }, { caption: "Aqu铆 est谩 tu ticket de devoluci贸n." });
-    pdfSent = true;
-    
-    // Env铆o al OWNER (Notificaci贸n)
-    if (OWNER_CHAT_ID) {
-      try {
-        await bot.telegram.sendDocument(OWNER_CHAT_ID, { source: pdfBuf, filename: `ticket_${Date.now()}_owner.pdf` }, { caption: `Nueva devoluci贸n registrada en ${tab} (Registro en Sheets: OK).` });
-      } catch(e){ console.error("Error enviando notificaci贸n al owner:", e.message); }
-    }
-    
-    await ctx.reply("Record谩 conservar tu ticket PDF para seguimiento.");
-
-  } catch(err) {
-    // 3. Manejo de Error
-    console.error("鉂?ERROR CR脥TICO en guardar_devolucion:", err.message);
-    
-    let userMessage = "鉂?Ocurri贸 un error al guardar o enviar el ticket. ";
-    if (err.message.includes("Google Sheets no est谩 inicializado")) {
-        userMessage += "*Verific谩 la configuraci贸n del servidor y los permisos de Sheets.*";
-    } else if (err.message.includes("API")) {
-        userMessage += "*El guardado en Google Sheets fall贸*. Revis谩 los permisos del Servicio de Cuenta en tu hoja.";
-    } else {
-        userMessage += "Avis谩 al administrador. (Error gen茅rico)";
-    }
-    
-    if (pdfSent) { // Si el PDF se envi贸, pero el guardado fall贸.
-         await ctx.reply("鈿狅笍 El ticket PDF fue enviado, pero el *registro en Google Sheets fall贸*. Avis谩 al administrador.");
-    } else {
-        await ctx.reply(userMessage);
-    }
-  }
-
-  // Limpieza y vuelta al men煤 principal
   ctx.session = {};
   return replyMain(ctx);
 });
 
+bot.action("guardar_devolucion", async (ctx) => {
+  const s = ctx.session.data;
+  const tab = "DEVOLUCIONES";
 
-// --- INICIO EN MODO POLLING ---
-(async ()=>{\n  console.log("馃洜锔?Inicializando Google Sheets...");
-  // Inicializamos Sheets primero
-  await initSheets(); 
-  
-  // No necesitamos Express, solo iniciamos el bot directamente.
-  console.log("馃殌 Bot de Telegram iniciando en modo Polling (Local). Presiona Ctrl+C para detener.");
-  
-  // La funci贸n launch() de Telegraf inicia el Polling.
+  if (sheetsError) {
+    await ctx.editMessageText(
+      "? ERROR CRíTICO: El bot no pudo conectarse a Google Sheets. Verificá los logs del servidor para ver el error de autenticación o permisos."
+    );
+    ctx.session = {};
+    return replyMain(ctx);
+  }
+
+  const row = [
+    new Date().toLocaleString("es-AR", { timeZone: "America/Argentina/Buenos_Aires" }),
+    ctx.from?.first_name || ctx.from?.username || String(ctx.chat.id),
+    s.proveedor || "",
+    s.codigo || "",
+    s.descripcion || "",
+    s.cantidad || "",
+    s.motivo || "",
+    s.remito || "",
+    s.fechaFactura || "",
+    String(ctx.chat.id),
+  ];
+
+  let pdfSent = false;
+
+  try {
+    await appendRowToSheet(tab, row);
+    await ctx.editMessageText("? Devolución registrada correctamente. Generando ticket...");
+    await appendLog(`Devolución guardada en ${tab} por ${ctx.from?.first_name} (${ctx.chat.id})`);
+
+    const pdfBuf = await generateTicketPDF({
+      remitente: tab,
+      ...s,
+      usuario: ctx.from?.first_name || ctx.from?.username || String(ctx.chat.id),
+    });
+
+    await ctx.replyWithDocument(
+      { source: pdfBuf, filename: `ticket_${Date.now()}.pdf` },
+      { caption: "Aquí está tu ticket de devolución." }
+    );
+    pdfSent = true;
+
+    if (OWNER_CHAT_ID) {
+      try {
+        await bot.telegram.sendDocument(
+          OWNER_CHAT_ID,
+          { source: pdfBuf, filename: `ticket_${Date.now()}_owner.pdf` },
+          { caption: `Nueva devolución registrada en ${tab} (registro en Sheets OK).` }
+        );
+      } catch (e) {
+        console.error("Error enviando notificación al owner:", e.message);
+      }
+    }
+
+    await ctx.reply("Recordá conservar tu ticket PDF para seguimiento.");
+  } catch (err) {
+    console.error("? ERROR CRíTICO en guardar_devolucion:", err.message);
+    let userMessage = "? Ocurrió un error al guardar o enviar el ticket. ";
+    if (err.message.includes("Google Sheets no está inicializado")) {
+      userMessage += "*Verificá la configuración del servidor y los permisos de Sheets.*";
+    } else if (err.message.includes("API")) {
+      userMessage += "*El guardado en Google Sheets falló*. Revisá los permisos del servicio de cuenta.";
+    } else {
+      userMessage += "Avisá al administrador. (Error genérico)";
+    }
+
+    if (pdfSent) {
+      await ctx.reply(
+        "?? El ticket PDF fue enviado, pero el *registro en Google Sheets falló*. Avisá al administrador."
+      );
+    } else {
+      await ctx.reply(userMessage);
+    }
+  }
+
+  ctx.session = {};
+  return replyMain(ctx);
+});
+
+// --- INICIO DEL BOT ---
+(async () => {
+  console.log("??? Inicializando Google Sheets...");
+  await initSheets();
+
+  console.log("?? Bot de Telegram iniciando en modo Polling (Local). Presiona Ctrl+C para detener.");
   await bot.launch();
 
-  // Aseguramos que el bot se detenga correctamente al recibir una se帽al de interrupci贸n
-  process.once('SIGINT', () => bot.stop('SIGINT'));
-  process.once('SIGTERM', () => bot.stop('SIGTERM'));
-  console.log("鉁?Bot de Telegram iniciado.");
+  process.once("SIGINT", () => bot.stop("SIGINT"));
+  process.once("SIGTERM", () => bot.stop("SIGTERM"));
+
+  console.log("? Bot de Telegram iniciado correctamente.");
 })();
