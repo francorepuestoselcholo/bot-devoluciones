@@ -5,6 +5,9 @@ import LocalSession from 'telegraf-session-local';
 import PDFDocument from "pdfkit";
 import { google } from "googleapis";
 import axios from "axios";
+import dotenv from "dotenv";
+
+dotenv.config();
 
 // --- CONFIG/ENV ---
 const BOT_TOKEN = process.env.BOT_TOKEN;
