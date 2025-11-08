@@ -4,6 +4,8 @@ import LocalSession from 'telegraf-session-local';
 import PDFDocument from "pdfkit";
 import { google } from "googleapis";
 import axios from "axios";
+import dotenv from "dotenv";
+dotenv.config();
 
 // --- CONFIG/ENV ---
 const BOT_TOKEN = process.env.BOT_TOKEN; 
@@ -12,7 +14,7 @@ const OWNER_CHAT_ID = process.env.OWNER_CHAT_ID || null; // ID del chat del admi
 // 🛑 ¡ATENCIÓN! REEMPLAZA ESTO con el ID real de tu hoja de cálculo.
 const SHEET_ID = process.env.GOOGLE_SHEET_ID || "1BFGsZaUwvxV4IbGgXNOp5IrMYLVn-czVYpdxTleOBgo"; 
 // Credenciales: Este archivo debe estar en la misma carpeta.
-const GOOGLE_SERVICE_ACCOUNT_FILE = "./gen-lang-client-0104843305-3b7345de7ec0.json"; 
+const GOOGLE_SERVICE_ACCOUNT_FILE = "./gen-lang-client-0104843305-3b7345de7ec0.json";
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || null;
 const LOG_FILE = "logs.txt";
@@ -91,7 +93,7 @@ async function initSheets() {
   try {
     const EXAMPLE_SHEET_ID = "1BFGsZaUwvxV4IbGgXNOp5IrMYLVn-czVYpdxTleOBgo";
     if (SHEET_ID === EXAMPLE_SHEET_ID) {
-        console.error("❌ ERROR: Estás usando el ID de hoja de cálculo de EJEMPLO. Reemplázalo por tu ID real en la variable SHEET_ID.");
+        console.error("�?ERROR: Estás usando el ID de hoja de cálculo de EJEMPLO. Reemplázalo por tu ID real en la variable SHEET_ID.");
         sheetsError = true;
         return;
     }
@@ -107,10 +109,10 @@ async function initSheets() {
     // 3. Crear el cliente de Sheets
     sheets = google.sheets({ version: "v4", auth });
     sheetsInitialized = true;
-    console.log("✅ Google Sheets inicializado correctamente.");
+    console.log("�?Google Sheets inicializado correctamente.");
 
   } catch (error) {
-    console.error("❌ ERROR FATAL al inicializar Google Sheets:", error.message);
+    console.error("�?ERROR FATAL al inicializar Google Sheets:", error.message);
     console.error("⛔️ FALLÓ LA CONEXIÓN A SHEETS. Verificá:");
     console.error("   1. Que el archivo de credenciales existe: " + GOOGLE_SERVICE_ACCOUNT_FILE);
     console.error("   2. Que compartiste la hoja de cálculo con el email de la cuenta de servicio.");
@@ -173,7 +175,7 @@ bot.on('text', async (ctx) => {
         ctx.session.data.cantidad = text;
         ctx.session.step = 'awaiting_motivo';
         const keyboard = Markup.inlineKeyboard([
-            [Markup.button.callback("❌ Mal Pedido", "motivo_Mal_Pedido")],
+            [Markup.button.callback("�?Mal Pedido", "motivo_Mal_Pedido")],
             [Markup.button.callback("🔧 Fallado", "motivo_Fallado")],
             [Markup.button.callback("📦 Error de Envío", "motivo_Error_Envío")]
         ]);
@@ -209,7 +211,7 @@ bot.on('text', async (ctx) => {
         const resumen = `\n\nResumen:\nProveedor: ${s.proveedor}\nCódigo: ${s.codigo}\nDesc.: ${s.descripcion}\nCant.: ${s.cantidad}\nMotivo: ${s.motivo}\nRemito: ${s.remito}\nFecha Factura: ${s.fechaFactura}`;
         
         const keyboard = Markup.inlineKeyboard([
-            [Markup.button.callback("✅ Confirmar y Guardar", "guardar_devolucion")],
+            [Markup.button.callback("�?Confirmar y Guardar", "guardar_devolucion")],
             [Markup.button.callback("🔄 Cancelar", "cancelar")]
         ]);
 
@@ -232,7 +234,7 @@ bot.action("guardar_devolucion", async (ctx) => {
 
   // 🛑 NUEVA VERIFICACIÓN DE CONEXIÓN
   if (sheetsError) {
-    await ctx.editMessageText("❌ ERROR CRÍTICO: El bot no pudo conectarse a Google Sheets. Verificá los logs del servidor para ver el error de autenticación/permisos.");
+    await ctx.editMessageText("�?ERROR CRÍTICO: El bot no pudo conectarse a Google Sheets. Verificá los logs del servidor para ver el error de autenticación/permisos.");
     ctx.session = {};
     return replyMain(ctx);
   }
@@ -257,7 +259,7 @@ bot.action("guardar_devolucion", async (ctx) => {
     // 1. Guardar en Google Sheets (Si esto falla, se va al catch)
     await appendRowToSheet(tab, row);
     
-    await ctx.editMessageText("✅ Devolución registrada correctamente. Generando ticket..."); // Edita el mensaje de confirmación
+    await ctx.editMessageText("�?Devolución registrada correctamente. Generando ticket..."); // Edita el mensaje de confirmación
     await appendLog(`Devolución guardada en ${tab} por ${ctx.from?.first_name} (${ctx.chat.id})`);
 
     // 2. Generar y enviar el ticket PDF
@@ -290,9 +292,9 @@ bot.action("guardar_devolucion", async (ctx) => {
 
   } catch(err) {
     // 3. Manejo de Error
-    console.error("❌ ERROR CRÍTICO en guardar_devolucion:", err.message);
+    console.error("�?ERROR CRÍTICO en guardar_devolucion:", err.message);
     
-    let userMessage = "❌ Ocurrió un error al guardar o enviar el ticket. ";
+    let userMessage = "�?Ocurrió un error al guardar o enviar el ticket. ";
     if (err.message.includes("Google Sheets no está inicializado")) {
         userMessage += "*Verificá la configuración del servidor y los permisos de Sheets.*";
     } else if (err.message.includes("API")) {
@@ -315,7 +317,7 @@ bot.action("guardar_devolucion", async (ctx) => {
 
 
 // --- INICIO EN MODO POLLING ---
-(async ()=>{\n  console.log("🛠️ Inicializando Google Sheets...");
+(async ()=>{\n  console.log("🛠�?Inicializando Google Sheets...");
   // Inicializamos Sheets primero
   await initSheets(); 
   
@@ -328,5 +330,5 @@ bot.action("guardar_devolucion", async (ctx) => {
   // Aseguramos que el bot se detenga correctamente al recibir una señal de interrupción
   process.once('SIGINT', () => bot.stop('SIGINT'));
   process.once('SIGTERM', () => bot.stop('SIGTERM'));
-  console.log("✅ Bot de Telegram iniciado.");
+  console.log("�?Bot de Telegram iniciado.");
 })();
