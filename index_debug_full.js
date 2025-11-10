@@ -8,7 +8,8 @@ const fsp = fs.promises;
 const path = require("path");
 const express = require("express");
 const { Telegraf, Markup } = require("telegraf");
-const LocalSession = new LocalSession({ database: "session_db.json" });
+const TelegrafLocalSession = require("telegraf-session-local"); // AÑADIDO: Importar el constructor de la sesión local
+const localSessionMiddleware = new TelegrafLocalSession({ database: "session_db.json" }); // MODIFICADO: Crear la instancia con un nombre distinto
 const PDFDocument = require("pdfkit");
 const { google } = require("googleapis");
 const axios = require("axios");
@@ -256,7 +257,7 @@ async function sendEmailWithAttachment(remitenteDisplay, filePath, fileName, tic
 
 // ---------- BOT ----------
 const bot = new Telegraf(BOT_TOKEN);
-bot.use(LocalSession.middleware());
+bot.use(localSessionMiddleware.middleware()); // CORREGIDO: Usar la nueva instancia
 
 // Seguridad: solo usuarios permitidos
 bot.use(async (ctx, next) => {
