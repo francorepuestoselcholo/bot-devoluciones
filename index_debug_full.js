@@ -87,6 +87,32 @@ async function ensureLocalFolders() {
   }
   await log("📁 Carpetas locales de tickets aseguradas");
 }
+// ---------- PROVEEDORES (Lectura y búsqueda en Google Sheets) ----------
+async function readProviders() {
+  if (!sheetsInitialized) return [];
+  try {
+    const resp = await sheetsClient.spreadsheets.values.get({
+      spreadsheetId: SHEET_ID,
+      range: `Proveedores!A2:C`, // nombre, correo, direccion
+    });
+    const rows = resp.data.values || [];
+    return rows.map(([nombre, correo, direccion]) => ({
+      nombre: nombre || "",
+      correo: correo || "",
+      direccion: direccion || "",
+    }));
+  } catch (e) {
+    await errorLog("Error leyendo proveedores: " + e.message);
+    return [];
+  }
+}
+
+async function findProviderRowByName(nombreBuscado) {
+  const proveedores = await readProviders();
+  return proveedores.find(p =>
+    p.nombre.toLowerCase().includes(nombreBuscado.toLowerCase())
+  );
+}
 
 // ---------- PDF ----------
 async function generateTicketPDF(data) {
@@ -249,9 +275,47 @@ bot.action(/remitente_(.+)/, async (ctx) => {
       Ramirez: "Ramirez Cesar y Lois Gustavo S.H. (CUIT: 30-71144680-6)",
       Tejada: "Tejada Carlos y Gomez Juan S.H. (CUIT: 30-70996969-9)",
     }[remitente] || remitente;
-  ctx.session.step = "proveedor";
-  await ctx.reply(`Remitente: ${ctx.session.remitenteDisplay}\nIngresá el nombre del proveedor:`);
+
+  // 🔹 Leemos proveedores desde la hoja de Google Sheets
+  const proveedores = await readProviders();
+  if (!proveedores.length) {
+    await ctx.reply("⚠️ No se encontraron proveedores en la base de datos. Agregá uno desde el menú principal.", {
+      reply_markup: mainKeyboard.reply_markup,
+    });
+    return;
+  }
+
+  // 🔹 Creamos botones dinámicos
+  const botones = proveedores.slice(0, 10).map((p, i) =>
+    [Markup.button.callback(`${i + 1}. ${p.nombre}`, `prov_${i}`)]
+  );
+  botones.push([Markup.button.callback("✏️ Escribir otro proveedor", "prov_manual")]);
+  botones.push([Markup.button.callback("↩️ Volver", "main")]);
+
+  ctx.session.proveedores = proveedores;
+  ctx.session.step = "chooseProveedor";
+
+  await ctx.reply(
+    `Remitente seleccionado: *${ctx.session.remitenteDisplay}*\nElegí un proveedor:`,
+    { parse_mode: "Markdown", reply_markup: Markup.inlineKeyboard(botones) }
+  );
 });
+bot.action(/prov_(\d+)/, async (ctx) => {
+  try { await ctx.answerCbQuery(); } catch {}
+  const idx = Number(ctx.match[1]);
+  const prov = ctx.session.proveedores?.[idx];
+  if (!prov) return ctx.reply("⚠️ Proveedor inválido.", { reply_markup: mainKeyboard.reply_markup });
+  ctx.session.proveedor = prov.nombre;
+  ctx.session.step = "codigo";
+  await ctx.reply(`Proveedor seleccionado: *${prov.nombre}*.\nIngresá el código del producto:`, { parse_mode: "Markdown" });
+});
+
+bot.action("prov_manual", async (ctx) => {
+  try { await ctx.answerCbQuery(); } catch {}
+  ctx.session.step = "proveedor";
+  await ctx.reply("Escribí el nombre del proveedor manualmente:");
+});
+
 // ---------- MANEJO DE MENSAJES DE TEXTO ----------
 bot.on("text", async (ctx) => {
   const msg = ctx.message.text?.trim();
