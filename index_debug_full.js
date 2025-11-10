@@ -357,6 +357,9 @@ async function showProveedoresPage(ctx, page = 0) {
   const totalPages = Math.max(1, Math.ceil(proveedores.length / perPage));
   const start = page * perPage;
   const items = proveedores.slice(start, start + perPage);
+console.log("📋 Cantidad total de proveedores:", proveedores.length);
+console.log("➡️ Mostrando página:", page, "de", totalPages);
+console.log("📦 Ejemplo proveedor:", proveedores[0]);
 
   // Crear botones de proveedores
   const botones = items.map((p, i) => [
@@ -377,6 +380,8 @@ async function showProveedoresPage(ctx, page = 0) {
                `Elegí un proveedor:`;
 
   try {
+	  console.log("Botones generados:", botones.length);
+
     await ctx.reply(text, {
       parse_mode: "Markdown",
       reply_markup: Markup.inlineKeyboard(botones)
