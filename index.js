@@ -75,8 +75,7 @@ async function initSheets() {
   try {
     const keyFileContent = fs.readFileSync(GOOGLE_SERVICE_ACCOUNT_FILE, 'utf8');
     const key = JSON.parse(keyFileContent);
-    const privateKey = key.private_key.replace(/\n/g, '
-');
+    const privateKey = key.private_key.replace(/\\n/g, '\n');
 
     const jwt = new google.auth.JWT(key.client_email, null, privateKey, [
       'https://www.googleapis.com/auth/spreadsheets',
