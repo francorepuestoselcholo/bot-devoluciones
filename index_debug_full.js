@@ -8,7 +8,7 @@ const fsp = fs.promises;
 const path = require("path");
 const express = require("express");
 const { Telegraf, Markup } = require("telegraf");
-const LocalSession = require("telegraf-session-local");
+const LocalSession = new LocalSession({ database: "session_db.json" });
 const PDFDocument = require("pdfkit");
 const { google } = require("googleapis");
 const axios = require("axios");
@@ -256,7 +256,7 @@ async function sendEmailWithAttachment(remitenteDisplay, filePath, fileName, tic
 
 // ---------- BOT ----------
 const bot = new Telegraf(BOT_TOKEN);
-bot.use(new LocalSession({ database: "session_db.json" }).middleware());
+bot.use(LocalSession.middleware());
 
 // Seguridad: solo usuarios permitidos
 bot.use(async (ctx, next) => {
@@ -324,6 +324,18 @@ bot.action("registro", async (ctx) => {
   });
 });
 
+// FIX: Handler agregado para el botón "Consultar devoluciones"
+bot.action("consultar", async (ctx) => {
+  try { await ctx.answerCbQuery(); } catch {}
+  // Resetea la sesión y devuelve al menú principal
+  ctx.session = {};
+  ctx.session.step = "main_menu";
+  await ctx.reply("🔍 La función de *Consulta de Devoluciones* está en desarrollo. Por favor, usá el menú principal para otras acciones.", {
+    parse_mode: "Markdown",
+    reply_markup: mainKeyboard.reply_markup,
+  });
+});
+
 // ---------- SELECCIÓN DE PROVEEDORES CON PAGINACIÓN ----------
 bot.action(/remitente_(.+)/, async (ctx) => {
   try { await ctx.answerCbQuery(); } catch {}
@@ -357,7 +369,7 @@ async function showProveedoresPage(ctx, page = 0) {
   const totalPages = Math.ceil(proveedores.length / perPage);
   const start = page * perPage;
   const end = Math.min(start + perPage, proveedores.length);
-  const items = proveedores.slice(start, end); // Se usa items para el mapeo y la paginación
+  const items = proveedores.slice(start, end);
 
   console.log("📋 Cantidad total de proveedores:", proveedores.length);
   console.log("➡️ Mostrando página:", page, "de", totalPages);
@@ -393,7 +405,6 @@ async function showProveedoresPage(ctx, page = 0) {
   }
 }
 
-
 bot.action(/page_(\d+)/, async (ctx) => {
   try { await ctx.answerCbQuery(); } catch {}
   const page = Number(ctx.match[1]);
@@ -417,11 +428,15 @@ bot.action("prov_manual", async (ctx) => {
   await ctx.reply("Escribí el nombre del proveedor manualmente:");
 });
 
-// ---------- MANEJO DE MENSAJES DE TEXTO ----------
-bot.on("text", async (ctx) => {
+// ---------- MANEJO DE MENSAJES DE TEXTO (REGISTRO) ----------
+// Nota: La función bot.on('text') necesita un 'next()' si no está en un flujo conocido.
+// La versión original ya tenía un 'bot.on('text')' que maneja el flujo de registro.
+// Vamos a asegurar que solo el primer bot.on('text') existe para el flujo de registro
+// y el segundo bot.on('text') para agregarProveedor.
+
+bot.on("text", async (ctx, next) => {
   const msg = ctx.message.text?.trim();
   const step = ctx.session?.step;
-  const remitente = ctx.session?.remitente;
 
   if (ctx.session.flow === "registro") {
     switch (step) {
@@ -474,10 +489,18 @@ bot.on("text", async (ctx) => {
         return confirmarDevolucion(ctx, true);
 
       default:
-        return ctx.reply("⚠️ No entendí, por favor usá el menú.", {
-          reply_markup: mainKeyboard.reply_markup,
-        });
+        // Si estamos en el flujo 'registro' pero en un paso no manejado, pasamos al siguiente handler
+        await next();
+        return;
     }
+  } else if (ctx.session.flow === "agregarProveedor") {
+     // El flujo de agregarProveedor se maneja en el siguiente bot.on('text')
+     await next();
+     return;
+  } else {
+     // Si no estamos en ningún flujo, pasamos al siguiente handler
+     await next();
+     return;
   }
 });
 
@@ -531,12 +554,19 @@ async function confirmarDevolucion(ctx, enviarMail) {
     usuario: ctx.from?.first_name || "",
   };
 
-  const fileName = `ticket_${data.proveedor}_${Date.now()}.pdf`;
+  const fileName = `ticket_${data.proveedor.replace(/[^a-zA-Z0-9]/g, '_')}_${Date.now()}.pdf`; // Limpiar nombre para el archivo
   const localPath = path.join(TICKETS_BASE, data.remitente, fileName);
 
-  const pdfBuffer = await generateTicketPDF(data);
-  await fsp.writeFile(localPath, pdfBuffer);
-  await log(`📄 Ticket generado localmente: ${localPath}`);
+  try {
+    const pdfBuffer = await generateTicketPDF(data);
+    await fsp.writeFile(localPath, pdfBuffer);
+    await log(`📄 Ticket generado localmente: ${localPath}`);
+  } catch(e) {
+    await errorLog("❌ Error generando o guardando PDF: " + e.message);
+    await ctx.reply("⚠️ Error generando el ticket PDF. Revisa los logs.");
+    return; // Detener flujo si el PDF falla
+  }
+
 
   let driveUrl = null;
   try {
@@ -586,11 +616,29 @@ bot.action(/tickets_(.+)/, async (ctx) => {
   try { await ctx.answerCbQuery(); } catch {}
   const remitente = ctx.match[1];
   const folder = path.join(TICKETS_BASE, remitente);
-  const files = (await fsp.readdir(folder)).filter((f) => f.endsWith(".pdf"));
-  const last5 = files.sort((a, b) => fs.statSync(path.join(folder, b)).mtimeMs - fs.statSync(path.join(folder, a)).mtimeMs).slice(0, 5);
+  
+  let files = [];
+  try {
+     files = (await fsp.readdir(folder)).filter((f) => f.endsWith(".pdf"));
+  } catch(e) {
+     await errorLog(`Error leyendo carpeta de tickets ${folder}: ${e.message}`);
+     return ctx.reply("⚠️ Error al acceder a los archivos de tickets.", { reply_markup: mainKeyboard.reply_markup });
+  }
+
+  // Ordenar por fecha de modificación
+  const last5 = files
+    .map(file => ({
+        name: file,
+        path: path.join(folder, file),
+        time: fs.statSync(path.join(folder, file)).mtimeMs
+    }))
+    .sort((a, b) => b.time - a.time)
+    .slice(0, 5);
+
   if (!last5.length) return ctx.reply("No hay tickets disponibles.", { reply_markup: mainKeyboard.reply_markup });
+  
   for (const file of last5) {
-    await ctx.replyWithDocument({ source: path.join(folder, file), filename: file });
+    await ctx.replyWithDocument({ source: file.path, filename: file.name });
   }
   await ctx.reply("📋 Fin de la lista de tickets.", { reply_markup: mainKeyboard.reply_markup });
 });
@@ -657,7 +705,7 @@ bot.action("agregar_proveedor", async (ctx) => {
   await ctx.reply("🆕 Ingresá el *nombre* del nuevo proveedor:", { parse_mode: "Markdown" });
 });
 
-// Flujo de agregar proveedor
+// Flujo de agregar proveedor (bot.on 'text' separado para evitar conflictos de flujo)
 bot.on("text", async (ctx, next) => {
   const msg = ctx.message.text?.trim();
   if (ctx.session.flow === "agregarProveedor") {
@@ -696,8 +744,17 @@ bot.on("text", async (ctx, next) => {
         return;
     }
   } else {
+    // Si no estamos en el flujo 'agregarProveedor', dejamos que el handler anterior o el default se encarguen.
     await next();
   }
+});
+
+// Handler de texto por defecto si nada anterior lo manejó
+bot.on('text', async (ctx) => {
+    // Este es un fallback si el mensaje de texto no fue manejado por los flujos.
+    return ctx.reply("⚠️ No entendí, por favor usá el menú.", {
+        reply_markup: mainKeyboard.reply_markup,
+    });
 });
 
 // ---------- APP ----------
@@ -712,8 +769,20 @@ app.listen(PORT, async () => {
 
 // ---------- ERRORES ----------
 bot.catch(async (err, ctx) => {
-  await errorLog(`Unhandled error: ${err.message}`);
+  // Aseguramos que el error se loguee en un solo lugar
+  const errorMessage = `Unhandled error: ${err.message}`;
+  // Evitamos doble log si ya fue logueado en la función de confirmación.
+  if (!errorMessage.includes("PDF") && !errorMessage.includes("Drive")) { 
+     await errorLog(errorMessage);
+  }
+  // Intenta enviar un mensaje de error al usuario si es posible
+  try {
+      await ctx.reply("🚨 Ocurrió un error inesperado. Por favor, volvé a intentarlo desde el menú principal.", {
+          reply_markup: mainKeyboard.reply_markup,
+      });
+  } catch {}
 });
+
 
 // ---------- ARRANQUE DEL BOT ----------
 bot.launch();
