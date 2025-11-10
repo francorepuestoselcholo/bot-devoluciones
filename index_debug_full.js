@@ -377,21 +377,7 @@ bot.action(/remitente_(.+)/, async (ctx) => {
   botones.push([Markup.button.callback("↩️ Volver", "main")]);
 
   console.log("Botones generados:", botones.flat().length);
-
-  await ctx.reply(
-    `Página ${page + 1}/${totalPages}\nElegí un proveedor:`,
-    { reply_markup: Markup.inlineKeyboard(botones).reply_markup }
-  );
 }
-
-  const proveedores = ctx.session.proveedores || [];
-  const perPage = 8;
-  const totalPages = Math.max(1, Math.ceil(proveedores.length / perPage));
-  const start = page * perPage;
-  const items = proveedores.slice(start, start + perPage);
-console.log("📋 Cantidad total de proveedores:", proveedores.length);
-console.log("➡️ Mostrando página:", page, "de", totalPages);
-console.log("📦 Ejemplo proveedor:", proveedores[0]);
 
   // Crear botones de proveedores
   const botones = items.map((p, i) => [
