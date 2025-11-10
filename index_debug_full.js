@@ -351,7 +351,6 @@ bot.action(/remitente_(.+)/, async (ctx) => {
   return showProveedoresPage(ctx, 0);
 });
 
-async function showProveedoresPage(ctx, page = 0) {
   const proveedores = ctx.session.proveedores || [];
   const perPage = 10;
   const totalPages = Math.ceil(proveedores.length / perPage);
@@ -516,6 +515,39 @@ bot.on("text", async (ctx) => {
 bot.action("enviar_mail_si", async (ctx) => {
   try { await ctx.answerCbQuery(); } catch {}
   const provRow = await findProviderRowByName(ctx.session.proveedor);
+  // 🔹 Función async completa, se puede poner arriba de todo el código
+async function showProveedoresPage(ctx, page = 0) {
+  const proveedores = ctx.session.proveedores || [];
+  const perPage = 10;
+  const totalPages = Math.ceil(proveedores.length / perPage);
+  const start = page * perPage;
+  const end = Math.min(start + perPage, proveedores.length);
+
+  console.log("📋 Cantidad total de proveedores:", proveedores.length);
+  console.log("➡️ Mostrando página:", page, "de", totalPages);
+  console.log("📦 Ejemplo proveedor:", proveedores[0]);
+
+  const botones = [];
+  for (let i = start; i < end; i++) {
+    const p = proveedores[i];
+    botones.push([Markup.button.callback(`${i + 1}. ${p.nombre}`, `prov_${i}`)]);
+  }
+
+  const paginacion = [];
+  if (page > 0) paginacion.push(Markup.button.callback("⬅️ Anterior", `page_${page - 1}`));
+  if (end < proveedores.length) paginacion.push(Markup.button.callback("➡️ Siguiente", `page_${page + 1}`));
+
+  if (paginacion.length) botones.push(paginacion);
+  botones.push([Markup.button.callback("↩️ Volver", "main")]);
+
+  console.log("Botones generados:", botones.flat().length);
+
+  await ctx.reply(
+    `Página ${page + 1}/${totalPages}\nElegí un proveedor:`,
+    { reply_markup: Markup.inlineKeyboard(botones).reply_markup }
+  );
+}
+
   if (provRow && provRow.correo) {
     ctx.session.correoProveedor = provRow.correo;
     await ctx.reply(`Se usará el correo registrado: ${provRow.correo}`, {
