@@ -351,33 +351,17 @@ bot.action(/remitente_(.+)/, async (ctx) => {
   return showProveedoresPage(ctx, 0);
 });
 
+async function showProveedoresPage(ctx, page = 0) {
   const proveedores = ctx.session.proveedores || [];
   const perPage = 10;
   const totalPages = Math.ceil(proveedores.length / perPage);
   const start = page * perPage;
   const end = Math.min(start + perPage, proveedores.length);
+  const items = proveedores.slice(start, end); // Se usa items para el mapeo y la paginación
 
   console.log("📋 Cantidad total de proveedores:", proveedores.length);
   console.log("➡️ Mostrando página:", page, "de", totalPages);
   console.log("📦 Ejemplo proveedor:", proveedores[0]);
-
-  // 🔹 Crear una lista plana de botones (no array anidado)
-  const botones = [];
-  for (let i = start; i < end; i++) {
-    const p = proveedores[i];
-    botones.push([Markup.button.callback(`${i + 1}. ${p.nombre}`, `prov_${i}`)]);
-  }
-
-  // 🔹 Paginación y navegación
-  const paginacion = [];
-  if (page > 0) paginacion.push(Markup.button.callback("⬅️ Anterior", `page_${page - 1}`));
-  if (end < proveedores.length) paginacion.push(Markup.button.callback("➡️ Siguiente", `page_${page + 1}`));
-
-  if (paginacion.length) botones.push(paginacion);
-  botones.push([Markup.button.callback("↩️ Volver", "main")]);
-
-  console.log("Botones generados:", botones.flat().length);
-}
 
   // Crear botones de proveedores
   const botones = items.map((p, i) => [
@@ -501,38 +485,6 @@ bot.on("text", async (ctx) => {
 bot.action("enviar_mail_si", async (ctx) => {
   try { await ctx.answerCbQuery(); } catch {}
   const provRow = await findProviderRowByName(ctx.session.proveedor);
-  // 🔹 Función async completa, se puede poner arriba de todo el código
-async function showProveedoresPage(ctx, page = 0) {
-  const proveedores = ctx.session.proveedores || [];
-  const perPage = 10;
-  const totalPages = Math.ceil(proveedores.length / perPage);
-  const start = page * perPage;
-  const end = Math.min(start + perPage, proveedores.length);
-
-  console.log("📋 Cantidad total de proveedores:", proveedores.length);
-  console.log("➡️ Mostrando página:", page, "de", totalPages);
-  console.log("📦 Ejemplo proveedor:", proveedores[0]);
-
-  const botones = [];
-  for (let i = start; i < end; i++) {
-    const p = proveedores[i];
-    botones.push([Markup.button.callback(`${i + 1}. ${p.nombre}`, `prov_${i}`)]);
-  }
-
-  const paginacion = [];
-  if (page > 0) paginacion.push(Markup.button.callback("⬅️ Anterior", `page_${page - 1}`));
-  if (end < proveedores.length) paginacion.push(Markup.button.callback("➡️ Siguiente", `page_${page + 1}`));
-
-  if (paginacion.length) botones.push(paginacion);
-  botones.push([Markup.button.callback("↩️ Volver", "main")]);
-
-  console.log("Botones generados:", botones.flat().length);
-
-  await ctx.reply(
-    `Página ${page + 1}/${totalPages}\nElegí un proveedor:`,
-    { reply_markup: Markup.inlineKeyboard(botones).reply_markup }
-  );
-}
 
   if (provRow && provRow.correo) {
     ctx.session.correoProveedor = provRow.correo;
@@ -721,18 +673,23 @@ bot.on("text", async (ctx, next) => {
       case "direccionProveedor":
         ctx.session.nuevoProveedor.direccion = msg === "-" ? "" : msg;
         if (sheetsInitialized) {
-          await sheetsClient.spreadsheets.values.append({
-            spreadsheetId: SHEET_ID,
-            range: "Proveedores!A:C",
-            valueInputOption: "USER_ENTERED",
-            requestBody: {
-              values: [[
-                ctx.session.nuevoProveedor.nombre,
-                ctx.session.nuevoProveedor.correo,
-                ctx.session.nuevoProveedor.direccion
-              ]]
-            },
-          });
+          try {
+            await sheetsClient.spreadsheets.values.append({
+              spreadsheetId: SHEET_ID,
+              range: "Proveedores!A:C",
+              valueInputOption: "USER_ENTERED",
+              requestBody: {
+                values: [[
+                  ctx.session.nuevoProveedor.nombre,
+                  ctx.session.nuevoProveedor.correo,
+                  ctx.session.nuevoProveedor.direccion
+                ]]
+              },
+            });
+            await log(`✅ Nuevo proveedor agregado a Sheets: ${ctx.session.nuevoProveedor.nombre}`);
+          } catch (e) {
+             await errorLog("❌ Error agregando proveedor a Sheets: " + e.message);
+          }
         }
         await ctx.reply("✅ Proveedor agregado correctamente.", { reply_markup: mainKeyboard.reply_markup });
         ctx.session = {};
