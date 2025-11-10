@@ -113,6 +113,67 @@ async function findProviderRowByName(nombreBuscado) {
     p.nombre.toLowerCase().includes(nombreBuscado.toLowerCase())
   );
 }
+// ---------- DRIVE Y SHEETS AUX ----------
+async function uploadToDrive(remitente, filePath, fileName) {
+  if (!driveClient) {
+    await warn("⚠️ Drive no inicializado, no se sube archivo.");
+    return null;
+  }
+
+  try {
+    const folderName = remitente;
+    const folderRes = await driveClient.files.list({
+      q: `mimeType='application/vnd.google-apps.folder' and name='${folderName}' and '${DRIVE_PARENT_FOLDER_ID}' in parents and trashed=false`,
+      fields: "files(id, name)",
+    });
+
+    let folderId = folderRes.data.files?.[0]?.id;
+    if (!folderId) {
+      const folder = await driveClient.files.create({
+        requestBody: {
+          name: folderName,
+          mimeType: "application/vnd.google-apps.folder",
+          parents: [DRIVE_PARENT_FOLDER_ID],
+        },
+        fields: "id",
+      });
+      folderId = folder.data.id;
+    }
+
+    const fileMetadata = {
+      name: fileName,
+      parents: [folderId],
+    };
+    const media = { mimeType: "application/pdf", body: fs.createReadStream(filePath) };
+    const file = await driveClient.files.create({
+      requestBody: fileMetadata,
+      media,
+      fields: "id, webViewLink",
+    });
+
+    await log(`📤 Archivo subido a Drive: ${file.data.webViewLink}`);
+    return file.data.webViewLink;
+  } catch (e) {
+    await errorLog("Error en uploadToDrive: " + e.message);
+    return null;
+  }
+}
+
+async function appendRowToSheet(remitente, values) {
+  if (!sheetsInitialized) return;
+  const range = `${remitente}!A:I`; // cada remitente tiene su hoja
+  try {
+    await sheetsClient.spreadsheets.values.append({
+      spreadsheetId: SHEET_ID,
+      range,
+      valueInputOption: "USER_ENTERED",
+      requestBody: { values: [values] },
+    });
+    await log(`📊 Registro añadido en hoja ${remitente}`);
+  } catch (e) {
+    await errorLog("Error en appendRowToSheet: " + e.message);
+  }
+}
 
 // ---------- PDF ----------
 async function generateTicketPDF(data) {
@@ -491,6 +552,69 @@ bot.action(/tickets_(.+)/, async (ctx) => {
     await ctx.replyWithDocument({ source: path.join(folder, file), filename: file });
   }
   await ctx.reply("📋 Fin de la lista de tickets.", { reply_markup: mainKeyboard.reply_markup });
+});
+// ---------- VER Y AGREGAR PROVEEDORES ----------
+bot.action("ver_proveedores", async (ctx) => {
+  try { await ctx.answerCbQuery(); } catch {}
+  const proveedores = await readProviders();
+  if (!proveedores.length) {
+    return ctx.reply("⚠️ No hay proveedores registrados.", { reply_markup: mainKeyboard.reply_markup });
+  }
+
+  const lista = proveedores
+    .slice(0, 15)
+    .map((p, i) => `${i + 1}. ${p.nombre}${p.correo ? ` (${p.correo})` : ""}`)
+    .join("\n");
+
+  await ctx.reply(`📋 *Proveedores registrados:*\n${lista}`, {
+    parse_mode: "Markdown",
+    reply_markup: mainKeyboard.reply_markup,
+  });
+});
+
+bot.action("agregar_proveedor", async (ctx) => {
+  try { await ctx.answerCbQuery(); } catch {}
+  ctx.session.flow = "agregarProveedor";
+  ctx.session.step = "nombreProveedor";
+  await ctx.reply("🆕 Ingresá el *nombre* del nuevo proveedor:", { parse_mode: "Markdown" });
+});
+
+// Flujo de agregar proveedor
+bot.on("text", async (ctx, next) => {
+  const msg = ctx.message.text?.trim();
+  if (ctx.session.flow === "agregarProveedor") {
+    switch (ctx.session.step) {
+      case "nombreProveedor":
+        ctx.session.nuevoProveedor = { nombre: msg };
+        ctx.session.step = "correoProveedor";
+        return ctx.reply("📧 Ingresá el correo del proveedor (o escribí '-' si no tiene):");
+      case "correoProveedor":
+        ctx.session.nuevoProveedor.correo = msg === "-" ? "" : msg;
+        ctx.session.step = "direccionProveedor";
+        return ctx.reply("🏢 Ingresá la dirección del proveedor (o '-' si no aplica):");
+      case "direccionProveedor":
+        ctx.session.nuevoProveedor.direccion = msg === "-" ? "" : msg;
+        if (sheetsInitialized) {
+          await sheetsClient.spreadsheets.values.append({
+            spreadsheetId: SHEET_ID,
+            range: "Proveedores!A:C",
+            valueInputOption: "USER_ENTERED",
+            requestBody: {
+              values: [[
+                ctx.session.nuevoProveedor.nombre,
+                ctx.session.nuevoProveedor.correo,
+                ctx.session.nuevoProveedor.direccion
+              ]]
+            },
+          });
+        }
+        await ctx.reply("✅ Proveedor agregado correctamente.", { reply_markup: mainKeyboard.reply_markup });
+        ctx.session = {};
+        return;
+    }
+  } else {
+    await next();
+  }
 });
 
 // ---------- APP ----------
