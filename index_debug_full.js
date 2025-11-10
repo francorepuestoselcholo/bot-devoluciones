@@ -353,6 +353,39 @@ bot.action(/remitente_(.+)/, async (ctx) => {
 
 async function showProveedoresPage(ctx, page = 0) {
   const proveedores = ctx.session.proveedores || [];
+  const perPage = 10;
+  const totalPages = Math.ceil(proveedores.length / perPage);
+  const start = page * perPage;
+  const end = Math.min(start + perPage, proveedores.length);
+
+  console.log("📋 Cantidad total de proveedores:", proveedores.length);
+  console.log("➡️ Mostrando página:", page, "de", totalPages);
+  console.log("📦 Ejemplo proveedor:", proveedores[0]);
+
+  // 🔹 Crear una lista plana de botones (no array anidado)
+  const botones = [];
+  for (let i = start; i < end; i++) {
+    const p = proveedores[i];
+    botones.push([Markup.button.callback(`${i + 1}. ${p.nombre}`, `prov_${i}`)]);
+  }
+
+  // 🔹 Paginación y navegación
+  const paginacion = [];
+  if (page > 0) paginacion.push(Markup.button.callback("⬅️ Anterior", `page_${page - 1}`));
+  if (end < proveedores.length) paginacion.push(Markup.button.callback("➡️ Siguiente", `page_${page + 1}`));
+
+  if (paginacion.length) botones.push(paginacion);
+  botones.push([Markup.button.callback("↩️ Volver", "main")]);
+
+  console.log("Botones generados:", botones.flat().length);
+
+  await ctx.reply(
+    `Página ${page + 1}/${totalPages}\nElegí un proveedor:`,
+    { reply_markup: Markup.inlineKeyboard(botones).reply_markup }
+  );
+}
+
+  const proveedores = ctx.session.proveedores || [];
   const perPage = 8;
   const totalPages = Math.max(1, Math.ceil(proveedores.length / perPage));
   const start = page * perPage;
