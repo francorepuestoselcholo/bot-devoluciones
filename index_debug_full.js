@@ -324,10 +324,9 @@ bot.action("registro", async (ctx) => {
   });
 });
 
+// ---------- SELECCIÓN DE PROVEEDORES CON PAGINACIÓN ----------
 bot.action(/remitente_(.+)/, async (ctx) => {
-  try {
-    await ctx.answerCbQuery();
-  } catch {}
+  try { await ctx.answerCbQuery(); } catch {}
   const remitente = ctx.match[1];
   ctx.session.remitente = remitente;
   ctx.session.remitenteDisplay =
@@ -337,7 +336,6 @@ bot.action(/remitente_(.+)/, async (ctx) => {
       Tejada: "Tejada Carlos y Gomez Juan S.H. (CUIT: 30-70996969-9)",
     }[remitente] || remitente;
 
-  // 🔹 Leemos proveedores desde la hoja de Google Sheets
   const proveedores = await readProviders();
   if (!proveedores.length) {
     await ctx.reply("⚠️ No se encontraron proveedores en la base de datos. Agregá uno desde el menú principal.", {
@@ -346,21 +344,45 @@ bot.action(/remitente_(.+)/, async (ctx) => {
     return;
   }
 
-  // 🔹 Creamos botones dinámicos
-  const botones = proveedores.slice(0, 10).map((p, i) =>
-    [Markup.button.callback(`${i + 1}. ${p.nombre}`, `prov_${i}`)]
-  );
+  ctx.session.proveedores = proveedores;
+  ctx.session.page = 0;
+  ctx.session.step = "chooseProveedor";
+
+  return showProveedoresPage(ctx, 0);
+});
+
+async function showProveedoresPage(ctx, page = 0) {
+  const proveedores = ctx.session.proveedores || [];
+  const perPage = 8;
+  const totalPages = Math.ceil(proveedores.length / perPage);
+  const start = page * perPage;
+  const items = proveedores.slice(start, start + perPage);
+
+  const botones = items.map((p, i) => [
+    Markup.button.callback(`${start + i + 1}. ${p.nombre}`, `prov_${start + i}`),
+  ]);
+
+  const nav = [];
+  if (page > 0) nav.push(Markup.button.callback("⬅️ Anterior", `page_${page - 1}`));
+  if (page < totalPages - 1) nav.push(Markup.button.callback("➡️ Siguiente", `page_${page + 1}`));
+
+  botones.push(nav);
   botones.push([Markup.button.callback("✏️ Escribir otro proveedor", "prov_manual")]);
   botones.push([Markup.button.callback("↩️ Volver", "main")]);
 
-  ctx.session.proveedores = proveedores;
-  ctx.session.step = "chooseProveedor";
-
   await ctx.reply(
-    `Remitente seleccionado: *${ctx.session.remitenteDisplay}*\nElegí un proveedor:`,
+    `Remitente seleccionado: *${ctx.session.remitenteDisplay}*\nPágina ${page + 1}/${totalPages}\nElegí un proveedor:`,
     { parse_mode: "Markdown", reply_markup: Markup.inlineKeyboard(botones) }
   );
+}
+
+bot.action(/page_(\d+)/, async (ctx) => {
+  try { await ctx.answerCbQuery(); } catch {}
+  const newPage = Number(ctx.match[1]);
+  ctx.session.page = newPage;
+  return showProveedoresPage(ctx, newPage);
 });
+
 bot.action(/prov_(\d+)/, async (ctx) => {
   try { await ctx.answerCbQuery(); } catch {}
   const idx = Number(ctx.match[1]);
@@ -554,23 +576,60 @@ bot.action(/tickets_(.+)/, async (ctx) => {
   await ctx.reply("📋 Fin de la lista de tickets.", { reply_markup: mainKeyboard.reply_markup });
 });
 // ---------- VER Y AGREGAR PROVEEDORES ----------
+// ---------- VER PROVEEDORES (LISTADO PAGINADO) ----------
 bot.action("ver_proveedores", async (ctx) => {
   try { await ctx.answerCbQuery(); } catch {}
   const proveedores = await readProviders();
   if (!proveedores.length) {
-    return ctx.reply("⚠️ No hay proveedores registrados.", { reply_markup: mainKeyboard.reply_markup });
+    return ctx.reply("⚠️ No hay proveedores cargados en la base de datos.", {
+      reply_markup: mainKeyboard.reply_markup,
+    });
   }
 
-  const lista = proveedores
-    .slice(0, 15)
-    .map((p, i) => `${i + 1}. ${p.nombre}${p.correo ? ` (${p.correo})` : ""}`)
-    .join("\n");
+  ctx.session.proveedores = proveedores;
+  ctx.session.page = 0;
+  ctx.session.step = "verProveedores";
 
-  await ctx.reply(`📋 *Proveedores registrados:*\n${lista}`, {
-    parse_mode: "Markdown",
-    reply_markup: mainKeyboard.reply_markup,
-  });
+  return showProveedoresListado(ctx, 0);
 });
+
+async function showProveedoresListado(ctx, page = 0) {
+  const proveedores = ctx.session.proveedores || [];
+  const perPage = 8;
+  const totalPages = Math.ceil(proveedores.length / perPage);
+  const start = page * perPage;
+  const items = proveedores.slice(start, start + perPage);
+
+  let text = `📋 *Proveedores registrados* (página ${page + 1}/${totalPages}):\n\n`;
+  for (let i = 0; i < items.length; i++) {
+    const p = items[i];
+    text += `${start + i + 1}. *${p.nombre}*`;
+    if (p.correo) text += ` (${p.correo})`;
+    if (p.direccion) text += ` — ${p.direccion}`;
+    text += "\n";
+  }
+
+  const nav = [];
+  if (page > 0) nav.push(Markup.button.callback("⬅️ Anterior", `provlist_${page - 1}`));
+  if (page < totalPages - 1) nav.push(Markup.button.callback("➡️ Siguiente", `provlist_${page + 1}`));
+
+  const botones = [];
+  if (nav.length) botones.push(nav);
+  botones.push([Markup.button.callback("↩️ Volver", "main")]);
+
+  await ctx.reply(text, {
+    parse_mode: "Markdown",
+    reply_markup: Markup.inlineKeyboard(botones),
+  });
+}
+
+bot.action(/provlist_(\d+)/, async (ctx) => {
+  try { await ctx.answerCbQuery(); } catch {}
+  const newPage = Number(ctx.match[1]);
+  ctx.session.page = newPage;
+  return showProveedoresListado(ctx, newPage);
+});
+
 
 bot.action("agregar_proveedor", async (ctx) => {
   try { await ctx.answerCbQuery(); } catch {}
