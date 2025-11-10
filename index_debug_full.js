@@ -354,27 +354,38 @@ bot.action(/remitente_(.+)/, async (ctx) => {
 async function showProveedoresPage(ctx, page = 0) {
   const proveedores = ctx.session.proveedores || [];
   const perPage = 8;
-  const totalPages = Math.ceil(proveedores.length / perPage);
+  const totalPages = Math.max(1, Math.ceil(proveedores.length / perPage));
   const start = page * perPage;
   const items = proveedores.slice(start, start + perPage);
 
+  // Crear botones de proveedores
   const botones = items.map((p, i) => [
-    Markup.button.callback(`${start + i + 1}. ${p.nombre}`, `prov_${start + i}`),
+    Markup.button.callback(`${start + i + 1}. ${p.nombre}`, `prov_${start + i}`)
   ]);
 
+  // Navegación
   const nav = [];
   if (page > 0) nav.push(Markup.button.callback("⬅️ Anterior", `page_${page - 1}`));
   if (page < totalPages - 1) nav.push(Markup.button.callback("➡️ Siguiente", `page_${page + 1}`));
 
-  botones.push(nav);
+  if (nav.length) botones.push(nav);
   botones.push([Markup.button.callback("✏️ Escribir otro proveedor", "prov_manual")]);
   botones.push([Markup.button.callback("↩️ Volver", "main")]);
 
-  await ctx.reply(
-    `Remitente seleccionado: *${ctx.session.remitenteDisplay}*\nPágina ${page + 1}/${totalPages}\nElegí un proveedor:`,
-    { parse_mode: "Markdown", reply_markup: Markup.inlineKeyboard(botones) }
-  );
+  const text = `Remitente seleccionado: *${ctx.session.remitenteDisplay}*\n\n` +
+               `Página ${page + 1}/${totalPages}\n` +
+               `Elegí un proveedor:`;
+
+  try {
+    await ctx.reply(text, {
+      parse_mode: "Markdown",
+      reply_markup: Markup.inlineKeyboard(botones)
+    });
+  } catch (err) {
+    await errorLog("Error mostrando página de proveedores: " + err.message);
+  }
 }
+
 
 bot.action(/page_(\d+)/, async (ctx) => {
   try { await ctx.answerCbQuery(); } catch {}
