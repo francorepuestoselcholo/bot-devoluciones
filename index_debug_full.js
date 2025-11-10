@@ -427,10 +427,10 @@ console.log("📦 Ejemplo proveedor:", proveedores[0]);
 
 bot.action(/page_(\d+)/, async (ctx) => {
   try { await ctx.answerCbQuery(); } catch {}
-  const newPage = Number(ctx.match[1]);
-  ctx.session.page = newPage;
-  return showProveedoresPage(ctx, newPage);
+  const page = Number(ctx.match[1]);
+  await showProveedoresPage(ctx, page);
 });
+
 
 bot.action(/prov_(\d+)/, async (ctx) => {
   try { await ctx.answerCbQuery(); } catch {}
