@@ -1,11 +1,8 @@
 // IMPORTANTE: Carga de dotenv usando require (CommonJS)
 // Esto asegura que las variables de entorno se carguen síncronamente antes de la inicialización
 // de módulos ES, resolviendo el error "BOT_TOKEN no definido".
-try {
-  require('dotenv').config();
-} catch (e) {
-  console.error("Error al cargar dotenv. Asegurate de tener el módulo instalado: npm install dotenv");
-}
+import dotenv from "dotenv";
+dotenv.config();
 
 // === IMPORTS ===
 // fs (promise) para operaciones asíncronas
