@@ -1,790 +1,806 @@
-// index_debug_full.js - CommonJS
-// Versión con logs detallados, todos los flujos activos y conexión a Sheets + Drive + Gmail
-// Requisitos:
-// npm install telegraf telegraf-session-local pdfkit googleapis axios dotenv nodemailer express
+import { promises as fs } from "fs";
+import express from "express";
+import { Telegraf, Markup } from "telegraf"; 
+import LocalSession from 'telegraf-session-local'; 
+import PDFDocument from "pdfkit";
+import { google } from "googleapis";
+import axios from "axios";
+import dotenv from "dotenv";
 
-const fs = require("fs");
-const fsp = fs.promises;
-const path = require("path");
-const express = require("express");
-const { Telegraf, Markup } = require("telegraf");
-const TelegrafLocalSession = require("telegraf-session-local"); // AÑADIDO: Importar el constructor de la sesión local
-const localSessionMiddleware = new TelegrafLocalSession({ database: "session_db.json" }); // MODIFICADO: Crear la instancia con un nombre distinto
-const PDFDocument = require("pdfkit");
-const { google } = require("googleapis");
-const axios = require("axios");
-const nodemailer = require("nodemailer");
-require("dotenv").config();
+dotenv.config();
 
-// ---------- CONFIG ----------
+// --- CONFIG/ENV ---
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const OWNER_CHAT_ID = process.env.OWNER_CHAT_ID || null;
-const SHEET_ID = process.env.GOOGLE_SHEET_ID || "";
-const GOOGLE_SERVICE_ACCOUNT_FILE = "./gen-lang-client-0104843305-3b7345de7ec0.json";
+
+// ID de la hoja de cálculo
+const SHEET_ID = process.env.GOOGLE_SHEET_ID || "1BFGsZaUwvxV4IbGgXNOp5IrMYLVn-czVYpdxTleOBgo"; // ID de ejemplo
+
+// Credenciales: SE ESPERA QUE ESTE ARCHIVO ESTÉ EN EL DISCO (subido como Secret File)
+const GOOGLE_SERVICE_ACCOUNT_FILE = "./gen-lang-client-0104843305-3b7345de7ec0.json"; 
+
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY || null;
 const LOG_FILE = "logs.txt";
 const PORT = process.env.PORT || 3000;
-const LOGO_PATH = "./REPUESTOS EL CHOLO LOGO.png";
-const DRIVE_PARENT_FOLDER_ID = "1ByMDQDSWku135s1SwForGtWvyl2gcRSM";
-const TICKETS_BASE = path.join(__dirname, "tickets");
+const LOGO_PATH = "./REPUESTOS EL CHOLO LOGO.png"; // RUTA DEL LOGO (DEBE ESTAR SUBIDO)
+// NUEVA CONFIGURACIÓN: URL pública para Webhooks
+const WEBHOOK_URL = process.env.WEBHOOK_URL; 
+const DRIVE_PARENT_FOLDER_ID = process.env.DRIVE_PARENT_FOLDER_ID || "1ByMDQDSWku135s1SwH48cI7P8Iq1B7R7"; // ID de carpeta de Drive de ejemplo
+const EMAIL_RECEPTOR = process.env.EMAIL_RECEPTOR || "email@ejemplo.com"; // Email para enviar PDFs
 
-const MAIL_USER = process.env.MAIL_USER || "";
-const MAIL_PASS = process.env.MAIL_PASS || "";
-const INTERNAL_NOTIFY_EMAIL = "info@repuestoselcholo.com.ar";
+if (!BOT_TOKEN) throw new Error("FATAL: BOT_TOKEN no definido en .env");
 
-const ALLOWED_USERS = (process.env.ALLOWED_USERS || "")
-  .split(",")
-  .map((s) => s.trim())
-  .filter(Boolean);
+// --- UTILS/LOGGING ---
+let logStream;
+const getTimestamp = () => new Date().toLocaleString("es-AR", { timeZone: "America/Argentina/Buenos_Aires" });
 
-if (!BOT_TOKEN) throw new Error("FATAL: BOT_TOKEN no definido.");
-
-// ---------- LOGGING ----------
-async function appendLogRaw(level, msg) {
-  const ts = new Date().toISOString();
-  const line = `[${ts}] [${level}] ${msg}\n`;
+const ensureLocalFolders = async () => {
   try {
-    await fsp.appendFile(LOG_FILE, line);
-  } catch (e) {}
-  console.log(line.trim());
-}
-const log = (m) => appendLogRaw("INFO", m);
-const warn = (m) => appendLogRaw("WARN", m);
-const errorLog = (m) => appendLogRaw("ERROR", m);
-
-// ---------- GOOGLE ----------
-let sheetsClient = null;
-let driveClient = null;
-let sheetsInitialized = false;
-
-async function initGoogleAuth() {
-  const keyRaw = await fsp.readFile(GOOGLE_SERVICE_ACCOUNT_FILE, "utf8");
-  const key = JSON.parse(keyRaw);
-  const privateKey = key.private_key.replace(/\\n/g, "\n");
-  const jwt = new google.auth.JWT(key.client_email, null, privateKey, [
-    "https://www.googleapis.com/auth/spreadsheets",
-    "https://www.googleapis.com/auth/drive",
-  ]);
-  await jwt.authorize();
-  return jwt;
-}
-
-async function initSheets() {
-  try {
-    const jwt = await initGoogleAuth();
-    sheetsClient = google.sheets({ version: "v4", auth: jwt });
-    driveClient = google.drive({ version: "v3", auth: jwt });
-    sheetsInitialized = true;
-    await log("✅ Google Sheets & Drive inicializados correctamente.");
-  } catch (e) {
-    sheetsInitialized = false;
-    await errorLog("❌ Error inicializando Sheets/Drive: " + e.message);
+    if (!fs.existsSync("./logs")) await fs.mkdir("./logs");
+    if (!fs.existsSync("./temp_pdfs")) await fs.mkdir("./temp_pdfs");
+    logStream = fs.createWriteStream(path.join("./logs", LOG_FILE), { flags: "a" });
+    await fs.copyFile("./REPUESTOS EL CHOLO LOGO.png", "./temp_pdfs/REPUESTOS EL CHOLO LOGO.png");
+  } catch (err) {
+    console.error(`Error asegurando carpetas locales: ${err.message}`);
   }
-}
+};
 
-async function ensureLocalFolders() {
-  await fsp.mkdir(TICKETS_BASE, { recursive: true }).catch(() => {});
-  for (const r of ["ElCholo", "Ramirez", "Tejada"]) {
-    await fsp.mkdir(path.join(TICKETS_BASE, r), { recursive: true }).catch(() => {});
-  }
-  await log("📁 Carpetas locales de tickets aseguradas");
-}
-// ---------- PROVEEDORES (Lectura y búsqueda en Google Sheets) ----------
-async function readProviders() {
-  if (!sheetsInitialized) return [];
-  try {
-    const resp = await sheetsClient.spreadsheets.values.get({
-      spreadsheetId: SHEET_ID,
-      range: `Proveedores!A2:C`, // nombre, correo, direccion
-    });
-    const rows = resp.data.values || [];
-    return rows.map(([nombre, correo, direccion]) => ({
-      nombre: nombre || "",
-      correo: correo || "",
-      direccion: direccion || "",
-    }));
-  } catch (e) {
-    await errorLog("Error leyendo proveedores: " + e.message);
-    return [];
-  }
-}
+const log = async (message) => {
+  const fullMessage = `[INFO - ${getTimestamp()}] ${message}`;
+  console.log(fullMessage);
+  if (logStream) logStream.write(`${fullMessage}\n`);
+};
 
-async function findProviderRowByName(nombreBuscado) {
-  const proveedores = await readProviders();
-  return proveedores.find(p =>
-    p.nombre.toLowerCase().includes(nombreBuscado.toLowerCase())
-  );
-}
-// ---------- DRIVE Y SHEETS AUX ----------
-async function uploadToDrive(remitente, filePath, fileName) {
-  if (!driveClient) {
-    await warn("⚠️ Drive no inicializado, no se sube archivo.");
-    return null;
-  }
-
-  try {
-    const folderName = remitente;
-    const folderRes = await driveClient.files.list({
-      q: `mimeType='application/vnd.google-apps.folder' and name='${folderName}' and '${DRIVE_PARENT_FOLDER_ID}' in parents and trashed=false`,
-      fields: "files(id, name)",
-    });
-
-    let folderId = folderRes.data.files?.[0]?.id;
-    if (!folderId) {
-      const folder = await driveClient.files.create({
-        requestBody: {
-          name: folderName,
-          mimeType: "application/vnd.google-apps.folder",
-          parents: [DRIVE_PARENT_FOLDER_ID],
-        },
-        fields: "id",
-      });
-      folderId = folder.data.id;
-    }
-
-    const fileMetadata = {
-      name: fileName,
-      parents: [folderId],
-    };
-    const media = { mimeType: "application/pdf", body: fs.createReadStream(filePath) };
-    const file = await driveClient.files.create({
-      requestBody: fileMetadata,
-      media,
-      fields: "id, webViewLink",
-    });
-
-    await log(`📤 Archivo subido a Drive: ${file.data.webViewLink}`);
-    return file.data.webViewLink;
-  } catch (e) {
-    await errorLog("Error en uploadToDrive: " + e.message);
-    return null;
-  }
-}
-
-async function appendRowToSheet(remitente, values) {
-  if (!sheetsInitialized) return;
-  const range = `${remitente}!A:I`; // cada remitente tiene su hoja
-  try {
-    await sheetsClient.spreadsheets.values.append({
-      spreadsheetId: SHEET_ID,
-      range,
-      valueInputOption: "USER_ENTERED",
-      requestBody: { values: [values] },
-    });
-    await log(`📊 Registro añadido en hoja ${remitente}`);
-  } catch (e) {
-    await errorLog("Error en appendRowToSheet: " + e.message);
-  }
-}
-
-// ---------- PDF ----------
-async function generateTicketPDF(data) {
-  return new Promise((resolve, reject) => {
+const errorLog = async (message) => {
+  const fullMessage = `[ERROR - ${getTimestamp()}] ${message}`;
+  console.error(fullMessage);
+  if (logStream) logStream.write(`${fullMessage}\n`);
+  // Notificar al dueño del bot en caso de error grave
+  if (OWNER_CHAT_ID) {
     try {
-      const doc = new PDFDocument({ size: "A4", margin: 40 });
-      const chunks = [];
-      doc.on("data", (c) => chunks.push(c));
-      doc.on("end", () => resolve(Buffer.concat(chunks)));
-
-      const RED = "#C8102E",
-        BLUE = "#0B3B70";
-      if (fs.existsSync(LOGO_PATH)) doc.image(LOGO_PATH, 40, 40, { width: 120 });
-      doc.fillColor(BLUE).fontSize(18).text("Ticket de Devolución", { align: "right" });
-      doc.moveDown(1);
-      doc.fillColor("black").fontSize(11).text(`Fecha registro: ${new Date().toLocaleString()}`, { align: "right" });
-      doc.moveDown(0.5);
-      doc.rect(40, doc.y, 515, 170).strokeColor(RED).lineWidth(1).stroke();
-      doc.moveDown(1);
-      doc.fontSize(12);
-      const line = (l, v) => doc.fillColor(BLUE).text(`${l}: `, { continued: true }).fillColor("black").text(v).moveDown(0.2);
-      line("Remitente", data.remitenteDisplay);
-      line("Proveedor", data.proveedor);
-      line("Código", data.codigo);
-      line("Descripción", data.descripcion);
-      line("Cantidad", data.cantidad);
-      line("Motivo", data.motivo);
-      line("Remito/Factura", data.remito);
-      line("Fecha factura", data.fechaFactura);
-      doc.moveDown(1);
-      doc.fillColor("gray").fontSize(10).text("Gracias por registrar la devolución.", { align: "center" });
-      doc.end();
+      await bot.telegram.sendMessage(OWNER_CHAT_ID, `🚨 Error grave en el bot:\n\`\`\`${message}\`\`\``, {
+        parse_mode: 'Markdown',
+      });
     } catch (e) {
-      reject(e);
+      console.error(`Error al intentar notificar al dueño: ${e.message}`);
+    }
+  }
+};
+
+// --- GOOGLE API SETUP (Sheets & Drive) ---
+let googleAuth;
+let sheets;
+let drive;
+
+const initSheets = async () => {
+  try {
+    const credentials = JSON.parse(await fs.readFile(GOOGLE_SERVICE_ACCOUNT_FILE));
+    googleAuth = new google.auth.GoogleAuth({
+      credentials,
+      scopes: ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"],
+    });
+
+    sheets = google.sheets({ version: "v4", auth: googleAuth });
+    drive = google.drive({ version: "v3", auth: googleAuth });
+    await log("✅ Google Sheets y Drive inicializados.");
+  } catch (e) {
+    await errorLog(`Error al inicializar Google APIs: ${e.message}`);
+    throw e;
+  }
+};
+
+// --- MAILER SETUP ---
+let transporter;
+const initMailer = () => {
+  transporter = nodemailer.createTransport({
+    service: 'gmail',
+    auth: {
+      user: process.env.GMAIL_USER,
+      pass: process.env.GMAIL_PASS,
     }
   });
-}
-// ---------- EMAIL ----------
-let mailTransporter = null;
-function initMailer() {
-  if (!MAIL_USER || !MAIL_PASS) {
-    warn("⚠️ MAIL_USER o MAIL_PASS no definidos — los correos están deshabilitados.");
-    return;
-  }
-  mailTransporter = nodemailer.createTransport({
-    service: "gmail",
-    auth: { user: MAIL_USER, pass: MAIL_PASS },
-  });
-}
+  log("✅ Nodemailer inicializado.");
+};
 
-async function sendEmailWithAttachment(remitenteDisplay, filePath, fileName, ticketData, driveUrl) {
-  if (!mailTransporter) return warn("Mailer no inicializado, no se envió correo.");
-  const html = `
-  <div style="font-family:Arial,sans-serif">
-    <img src="cid:logo" width="180"><h2 style="color:#0B3B70">Nueva devolución registrada</h2>
-    <ul>
-      <li><b>Remitente:</b> ${remitenteDisplay}</li>
-      <li><b>Proveedor:</b> ${ticketData.proveedor}</li>
-      <li><b>Código:</b> ${ticketData.codigo}</li>
-      <li><b>Descripción:</b> ${ticketData.descripcion}</li>
-      <li><b>Cantidad:</b> ${ticketData.cantidad}</li>
-      <li><b>Motivo:</b> ${ticketData.motivo}</li>
-      <li><b>Remito/Factura:</b> ${ticketData.remito}</li>
-      <li><b>Fecha factura:</b> ${ticketData.fechaFactura}</li>
-    </ul>
-    ${driveUrl ? `<p>Archivo en Drive: <a href="${driveUrl}">${driveUrl}</a></p>` : ""}
-    <p>El ticket PDF se adjunta a este correo.</p>
-  </div>`;
-  const attachments = [{ filename: fileName, path: filePath }];
-  if (fs.existsSync(LOGO_PATH)) attachments.push({ filename: path.basename(LOGO_PATH), path: LOGO_PATH, cid: "logo" });
-  await mailTransporter.sendMail({
-    from: `"Repuestos El Cholo" <${MAIL_USER}>`,
-    to: INTERNAL_NOTIFY_EMAIL,
-    subject: `📦 Nueva devolución - ${remitenteDisplay} - ${ticketData.proveedor}`,
-    html,
-    attachments,
-  });
-  await log(`📧 Correo enviado a ${INTERNAL_NOTIFY_EMAIL}`);
-}
+// --- FIREBASE/GEMINI SETUP (If applicable, though not strictly required for this specific bot logic) ---
+// Not used directly in this version, kept for future expansion.
 
-// ---------- BOT ----------
+// --- TELEGRAM BOT ---
 const bot = new Telegraf(BOT_TOKEN);
-bot.use(localSessionMiddleware.middleware()); // CORREGIDO: Usar la nueva instancia
+const localSessionMiddleware = new LocalSession({ database: "session_db.json" }); 
+bot.use(localSessionMiddleware.middleware()); // Usar la sesión local
 
-// Seguridad: solo usuarios permitidos
-bot.use(async (ctx, next) => {
-  const uid = String(ctx.from?.id || "");
-  if (ALLOWED_USERS.length > 0 && !ALLOWED_USERS.includes(uid)) {
-    await ctx.reply("🚫 No estás autorizado para usar este bot.");
-    return;
+// --- KEYBOARDS ---
+const mainKeyboard = Markup.keyboard([
+  ["📄 Generar PDF (Venta)"],
+  ["➕ Agregar Proveedor"],
+  ["⚙️ Estado del Bot"],
+])
+.resize()
+.oneTime();
+
+const cancelKeyboard = Markup.keyboard([
+  ["/cancelar"],
+])
+.resize()
+.oneTime();
+
+const replyMain = (ctx, message = "Volviendo al menú principal.") => {
+  ctx.session = {}; // Limpia la sesión
+  return ctx.reply(message, {
+    reply_markup: mainKeyboard.reply_markup,
+  });
+};
+
+// --- CORE FUNCTIONS ---
+
+/**
+ * 1. Genera el archivo PDF localmente.
+ * @param {object} data - Datos para el PDF.
+ * @returns {Promise<string>} Ruta del PDF generado.
+ */
+const generatePdf = async (data, filenamePrefix = "Venta") => {
+  const filename = `${filenamePrefix}_${data.cliente.replace(/\s/g, "_")}_${Date.now()}.pdf`;
+  const filePath = path.join("./temp_pdfs", filename);
+  
+  await log(`Iniciando generación de PDF en ${filePath}`);
+
+  return new Promise((resolve, reject) => {
+    const doc = new PDFDocument({ margin: 50, size: "A4" });
+    const stream = fs.createWriteStream(filePath);
+    
+    doc.pipe(stream);
+
+    // Header con Logo y título
+    if (fs.existsSync(LOGO_PATH)) {
+      doc.image(LOGO_PATH, 50, 40, { width: 100 });
+    }
+    doc.fontSize(25).text("COMPROBANTE DE VENTA", { align: "right" });
+    doc.moveDown();
+    
+    // Información del Cliente
+    doc.fontSize(12).text(`Cliente: ${data.cliente}`);
+    doc.text(`Fecha: ${getTimestamp().split(',')[0]}`);
+    doc.moveDown();
+
+    // Tabla de Repuestos
+    const tableTop = doc.y;
+    const itemX = 50;
+    const cantidadX = 350;
+    const precioX = 420;
+    const totalX = 500;
+    let currentY = tableTop;
+
+    const drawHeader = () => {
+        doc.fillColor("#000000").fontSize(12).font("Helvetica-Bold");
+        doc.text("Artículo/Servicio", itemX, currentY, { width: 280, align: "left" });
+        doc.text("Cant.", cantidadX, currentY, { width: 50, align: "right" });
+        doc.text("Precio U.", precioX, currentY, { width: 70, align: "right" });
+        doc.text("Total", totalX, currentY, { width: 70, align: "right" });
+        doc.font("Helvetica").lineWidth(1).strokeColor("#AAAAAA").moveTo(itemX, currentY + 15).lineTo(550, currentY + 15).stroke();
+        currentY += 20;
+    };
+    
+    drawHeader();
+    let totalVenta = 0;
+
+    data.items.forEach(item => {
+        if (currentY > 750) { // Si queda poco espacio, añade una nueva página
+            doc.addPage();
+            currentY = 50;
+            drawHeader();
+        }
+        
+        const subtotal = item.cantidad * item.precio;
+        totalVenta += subtotal;
+
+        doc.fillColor("#000000").fontSize(10);
+        // Usamos un bloque de texto que se ajusta a la altura del contenido
+        doc.text(item.nombre, itemX, currentY, { width: 280, align: "left", continued: false, height: 15, ellipsis: true });
+        doc.text(item.cantidad.toString(), cantidadX, currentY, { width: 50, align: "right", continued: false });
+        doc.text(`$${item.precio.toFixed(2)}`, precioX, currentY, { width: 70, align: "right", continued: false });
+        doc.text(`$${subtotal.toFixed(2)}`, totalX, currentY, { width: 70, align: "right", continued: false });
+        
+        currentY += 20; // Espacio fijo para el siguiente ítem
+    });
+
+    // Separador y Total Final
+    doc.moveDown();
+    currentY = Math.max(currentY, doc.y); // Asegurar que currentY no retroceda
+    
+    doc.lineWidth(2).strokeColor("#000000").moveTo(itemX, currentY + 10).lineTo(550, currentY + 10).stroke();
+    
+    doc.moveDown(2);
+    doc.fillColor("#000000").fontSize(16).font("Helvetica-Bold");
+    doc.text("TOTAL FINAL:", 350, doc.y, { align: "left" });
+    doc.text(`$${totalVenta.toFixed(2)}`, 450, doc.y, { align: "right", width: 100 });
+    
+    // Pie de página
+    const footerText = "Gracias por su compra. El Cholo Repuestos.";
+    doc.fontSize(8).text(footerText, 50, doc.page.height - 30, { align: "center", width: 500 });
+
+    doc.end();
+
+    stream.on("finish", () => {
+      log(`PDF generado y guardado en ${filePath}`);
+      resolve(filePath);
+    });
+
+    stream.on("error", (err) => {
+      errorLog(`Error en stream de PDF: ${err.message}`);
+      reject(err);
+    });
+  });
+};
+
+/**
+ * 2. Sube el archivo a Google Drive.
+ * @param {string} filePath - Ruta del archivo local.
+ * @returns {Promise<string>} ID del archivo en Drive.
+ */
+const uploadToDrive = async (filePath) => {
+  const fileName = path.basename(filePath);
+  await log(`Iniciando subida de ${fileName} a Google Drive...`);
+
+  const fileMetadata = {
+    name: fileName,
+    parents: [DRIVE_PARENT_FOLDER_ID],
+  };
+
+  const media = {
+    mimeType: "application/pdf",
+    body: fs.createReadStream(filePath),
+  };
+
+  try {
+    const response = await drive.files.create({
+      resource: fileMetadata,
+      media: media,
+      fields: "id",
+    });
+    const fileId = response.data.id;
+    await log(`✅ Archivo subido a Drive con ID: ${fileId}`);
+    return fileId;
+  } catch (err) {
+    await errorLog(`Error al subir a Drive: ${err.message}`);
+    throw err;
   }
+};
+
+/**
+ * 3. Registra la transacción en Google Sheets.
+ * @param {object} data - Datos de la transacción.
+ */
+const recordToSheets = async (data) => {
+  await log("Iniciando registro en Google Sheets...");
+  const total = data.items.reduce((sum, item) => sum + item.cantidad * item.precio, 0);
+  const row = [
+    getTimestamp(), // Columna A: Fecha y Hora
+    data.cliente,   // Columna B: Cliente
+    total,          // Columna C: Total
+    JSON.stringify(data.items), // Columna D: Items (detallado como JSON)
+    // Se podrían agregar más campos como el ID de Drive si fuera necesario.
+  ];
+
+  try {
+    const response = await sheets.spreadsheets.values.append({
+      spreadsheetId: SHEET_ID,
+      range: "Ventas!A:D", // Ajusta el nombre de la hoja si es necesario
+      valueInputOption: "USER_ENTERED",
+      resource: {
+        values: [row],
+      },
+    });
+    await log(`✅ Registro de venta exitoso en Sheets. Filas actualizadas: ${response.data.updates.updatedRows}`);
+  } catch (err) {
+    await errorLog(`Error al registrar en Sheets: ${err.message}`);
+    throw err;
+  }
+};
+
+/**
+ * 4. Envía el PDF por email.
+ * @param {string} filePath - Ruta del archivo local.
+ */
+const sendEmail = async (filePath) => {
+  const fileName = path.basename(filePath);
+  await log(`Iniciando envío de email con archivo: ${fileName}`);
+
+  try {
+    const mailOptions = {
+      from: process.env.GMAIL_USER,
+      to: EMAIL_RECEPTOR,
+      subject: `Nueva Venta - ${fileName}`,
+      text: `Adjunto el comprobante de venta generado por el bot de Telegram. Archivo: ${fileName}`,
+      attachments: [
+        {
+          filename: fileName,
+          path: filePath,
+        },
+      ],
+    };
+
+    const info = await transporter.sendMail(mailOptions);
+    await log(`✅ Email enviado: ${info.response}`);
+  } catch (err) {
+    await errorLog(`Error al enviar el email: ${err.message}`);
+    throw err;
+  }
+};
+
+/**
+ * 5. Registra un nuevo proveedor en Google Sheets.
+ * @param {object} data - Datos del proveedor.
+ */
+const recordProviderToSheets = async (data) => {
+  await log("Iniciando registro de proveedor en Google Sheets...");
+  const row = [
+    getTimestamp(), 
+    data.nombre,   
+    data.contacto, 
+    data.email,    
+    data.direccion,
+    data.telefono,
+  ];
+
+  try {
+    const response = await sheets.spreadsheets.values.append({
+      spreadsheetId: SHEET_ID,
+      range: "Proveedores!A:F", // Asegúrate de tener una hoja llamada 'Proveedores'
+      valueInputOption: "USER_ENTERED",
+      resource: {
+        values: [row],
+      },
+    });
+    await log(`✅ Registro de proveedor exitoso en Sheets. Filas actualizadas: ${response.data.updates.updatedRows}`);
+  } catch (err) {
+    await errorLog(`Error al registrar proveedor en Sheets: ${err.message}`);
+    throw err;
+  }
+};
+
+/**
+ * 6. Flujo completo de confirmación y procesamiento.
+ * @param {object} ctx - Contexto de Telegraf.
+ * @param {object} data - Datos para la venta.
+ */
+const confirmAndProcessSale = async (ctx, data) => {
+  let replyMessage = "✅ **Proceso completado:**\n\n";
+
+  try {
+    const filePath = await generatePdf(data);
+    
+    // Subir a Drive
+    await uploadToDrive(filePath);
+    replyMessage += "  - Subido a Google Drive\n";
+
+    // Registrar en Sheets
+    await recordToSheets(data);
+    replyMessage += "  - Registrado en Google Sheets\n";
+
+    // Enviar Email
+    await sendEmail(filePath);
+    replyMessage += "  - Enviado por Email\n";
+    
+    // Limpiar archivo local después de usarlo
+    await fs.unlink(filePath);
+    await log(`Archivo local ${filePath} eliminado.`);
+
+    // Mensaje final al usuario
+    await ctx.reply(replyMessage, { parse_mode: "Markdown" });
+
+  } catch (e) {
+    await errorLog(`Error en el flujo de confirmación: ${e.message}`);
+    await ctx.reply(`❌ Hubo un error al procesar la solicitud. Parte del proceso puede no haberse completado. Revisa los logs. \nDetalle del Error: \`${e.message}\``, {
+      parse_mode: "Markdown",
+    });
+  }
+
+  ctx.session = {};
+  return replyMain(ctx);
+};
+
+
+// --- HANDLERS (COMANDOS Y FLUJOS) ---
+
+bot.start(async (ctx) => {
+  await log(`Usuario ${ctx.from.id} inició el bot.`);
+  return replyMain(ctx, "¡Hola! Soy el Bot de Ventas de Repuestos El Cholo. Usá el menú para comenzar.");
+});
+
+bot.command("cancelar", (ctx) => {
+  return replyMain(ctx, "Operación cancelada. Volviendo al menú principal.");
+});
+
+// FLUSH
+bot.command("flush", async (ctx) => {
+    if (ctx.from.id == OWNER_CHAT_ID) {
+        ctx.session = {};
+        await ctx.reply("Sesión actual limpiada (flush).");
+    } else {
+        await ctx.reply("Comando reservado para el administrador.");
+    }
+});
+
+
+// Estado del Bot (Admin)
+let botStatus = "desconectado";
+bot.hears("⚙️ Estado del Bot", async (ctx) => {
+  let statusMessage = `*ESTADO DEL SISTEMA (${botStatus})*\n`;
+  statusMessage += `\n*Servicios*:\n`;
+  statusMessage += `  - Sheets: ${sheets ? '✅ Conectado' : '❌ Desconectado'}\n`;
+  statusMessage += `  - Drive: ${drive ? '✅ Conectado' : '❌ Desconectado'}\n`;
+  statusMessage += `  - Mailer: ${transporter ? '✅ Conectado' : '❌ Desconectado'}\n`;
+  statusMessage += `\n*Configuración*:\n`;
+  statusMessage += `  - Sheet ID: \`${SHEET_ID}\`\n`;
+  statusMessage += `  - Drive Folder ID: \`${DRIVE_PARENT_FOLDER_ID}\`\n`;
+  statusMessage += `  - Puerto (Express): \`${PORT}\`\n`;
+  statusMessage += `  - API Key Gemini: ${GEMINI_API_KEY ? '✅ Configurada' : '❌ No configurada'}\n`;
+  statusMessage += `  - Email Receptor: \`${EMAIL_RECEPTOR}\`\n`;
+  
+  await log(`Estado del bot solicitado por ${ctx.from.id}`);
+  return ctx.reply(statusMessage, { parse_mode: "Markdown" });
+});
+
+// --- FLUJO: GENERAR PDF (Venta) ---
+bot.hears("📄 Generar PDF (Venta)", async (ctx) => {
+  await log(`Inicio de flujo 'generarPdf' para ${ctx.from.id}`);
+  ctx.session.flow = "generarPdf";
+  ctx.session.step = 1;
+  ctx.session.data = { items: [] };
+
+  const message = "Ingresá el **nombre del cliente** para la factura. (O usá /cancelar)";
+  return ctx.reply(message, { 
+    parse_mode: "Markdown",
+    reply_markup: cancelKeyboard.reply_markup,
+  });
+});
+
+bot.hears("➕ Agregar Repuesto", async (ctx) => {
+  if (ctx.session.flow === "generarPdf") {
+    ctx.session.step = 3;
+    await ctx.reply("Ingresá el **nombre del repuesto/servicio** (ej: Filtro de Aceite).");
+  } else {
+    // Si no estamos en el flujo 'generarPdf', dejamos que el handler anterior o el default se encarguen.
+    await next();
+  }
+});
+
+bot.hears("✅ Confirmar Venta", async (ctx) => {
+  if (ctx.session.flow === "generarPdf") {
+    // Verificación final
+    if (ctx.session.data.items.length === 0) {
+      await ctx.reply("⚠️ Debés agregar al menos un repuesto antes de confirmar la venta.");
+      return;
+    }
+
+    // Preparar mensaje de resumen
+    let resumen = `**RESUMEN DE VENTA**\n\n`;
+    resumen += `*Cliente:* ${ctx.session.data.cliente}\n\n`;
+    resumen += `*Ítems:*\n`;
+    let total = 0;
+    ctx.session.data.items.forEach((item, index) => {
+      const subtotal = item.cantidad * item.precio;
+      total += subtotal;
+      resumen += `  ${index + 1}. ${item.nombre} x ${item.cantidad} ($${item.precio.toFixed(2)} c/u) = *$${subtotal.toFixed(2)}*\n`;
+    });
+    resumen += `\n*TOTAL FINAL:* *$${total.toFixed(2)}*\n\n`;
+    resumen += "⚠️ ¿Es correcto? Presioná **Confirmar Venta** para iniciar la generación de documentos y el envío por email, o /cancelar.";
+
+    const confirmationKeyboard = Markup.keyboard([
+      ["✨ Procesar y Confirmar Venta"],
+      ["/cancelar"],
+    ])
+    .resize()
+    .oneTime();
+
+    // Cambiamos el paso para esperar la confirmación final
+    ctx.session.step = "confirmacionFinal";
+    return ctx.reply(resumen, { 
+      parse_mode: "Markdown",
+      reply_markup: confirmationKeyboard.reply_markup,
+    });
+  } else {
+    // Si no estamos en el flujo 'generarPdf', dejamos que el handler anterior o el default se encarguen.
+    await next();
+  }
+});
+
+bot.hears("✨ Procesar y Confirmar Venta", async (ctx) => {
+  if (ctx.session.flow === "generarPdf" && ctx.session.step === "confirmacionFinal") {
+    await ctx.reply("⏱️ Procesando venta... Esto puede tardar unos segundos (Generando PDF, subiendo a Drive, registrando en Sheets y enviando email).");
+    await confirmAndProcessSale(ctx, ctx.session.data);
+  } else {
+    // Si no estamos en el flujo correcto, ignorar o usar el handler por defecto
+    await next();
+  }
+});
+
+// --- FLUJO: AGREGAR PROVEEDOR ---
+bot.hears("➕ Agregar Proveedor", async (ctx) => {
+  await log(`Inicio de flujo 'agregarProveedor' para ${ctx.from.id}`);
+  ctx.session.flow = "agregarProveedor";
+  ctx.session.step = 1;
+  ctx.session.data = {};
+
+  const message = "Ingresá el **nombre del proveedor** (ej: Baterías XXX). (O usá /cancelar)";
+  return ctx.reply(message, { 
+    parse_mode: "Markdown",
+    reply_markup: cancelKeyboard.reply_markup,
+  });
+});
+
+// --- MIDDLEWARE para manejar los flujos paso a paso ---
+bot.on('text', async (ctx, next) => {
+  const text = ctx.message.text.trim();
+  const flow = ctx.session.flow;
+  let currentStep = ctx.session.step;
+
+  // Manejo del flujo 'generarPdf'
+  if (flow === "generarPdf") {
+    
+    // Paso 1: Cliente
+    if (currentStep === 1) {
+      if (text.length < 3) {
+        return ctx.reply("El nombre del cliente debe tener al menos 3 caracteres.");
+      }
+      ctx.session.data.cliente = text;
+      ctx.session.step = 2; // Esperando acción (Agregar Repuesto o Confirmar)
+
+      const repuestoKeyboard = Markup.keyboard([
+        ["➕ Agregar Repuesto"],
+        ["/cancelar"],
+      ])
+      .resize()
+      .oneTime();
+
+      return ctx.reply(`Cliente establecido: *${text}*. Ahora agregá el primer repuesto.`, { 
+        parse_mode: "Markdown",
+        reply_markup: repuestoKeyboard.reply_markup,
+      });
+    } 
+    
+    // Paso 3: Nombre del Repuesto
+    else if (currentStep === 3) {
+      if (text.length < 2) {
+        return ctx.reply("El nombre del repuesto es muy corto.");
+      }
+      ctx.session.data.currentItem = { nombre: text };
+      ctx.session.step = 4;
+      return ctx.reply(`Repuesto: *${text}*. Ingresá la **cantidad** (solo números).`, { parse_mode: "Markdown" });
+    }
+    
+    // Paso 4: Cantidad del Repuesto
+    else if (currentStep === 4) {
+      const cantidad = parseInt(text);
+      if (isNaN(cantidad) || cantidad <= 0) {
+        return ctx.reply("⚠️ Cantidad inválida. Por favor, ingresá un número entero positivo.");
+      }
+      ctx.session.data.currentItem.cantidad = cantidad;
+      ctx.session.step = 5;
+      return ctx.reply(`Cantidad: *${cantidad}*. Ingresá el **precio unitario** (solo números, puedes usar decimales con punto o coma).`, { parse_mode: "Markdown" });
+    }
+    
+    // Paso 5: Precio del Repuesto
+    else if (currentStep === 5) {
+      const precioStr = text.replace(",", ".");
+      const precio = parseFloat(precioStr);
+
+      if (isNaN(precio) || precio <= 0) {
+        return ctx.reply("⚠️ Precio unitario inválido. Por favor, ingresá un número positivo.");
+      }
+      
+      ctx.session.data.currentItem.precio = precio;
+      
+      // Agregar ítem completo
+      ctx.session.data.items.push(ctx.session.data.currentItem);
+      
+      // Resumen actual y opciones
+      let resumen = `✅ Ítem agregado: *${ctx.session.data.currentItem.nombre}* x ${ctx.session.data.currentItem.cantidad} a $${precio.toFixed(2)} c/u.\n\n`;
+      resumen += `*Total de ítems agregados: ${ctx.session.data.items.length}.*\n\n`;
+      resumen += "¿Deseas agregar **otro repuesto** o **confirmar la venta**?";
+
+      const repuestoKeyboard = Markup.keyboard([
+        ["➕ Agregar Repuesto", "✅ Confirmar Venta"],
+        ["/cancelar"],
+      ])
+      .resize()
+      .oneTime();
+
+      // Volvemos al paso de selección de acción (Agregar/Confirmar)
+      ctx.session.step = 2; 
+      delete ctx.session.data.currentItem;
+      return ctx.reply(resumen, { 
+        parse_mode: "Markdown",
+        reply_markup: repuestoKeyboard.reply_markup,
+      });
+    }
+
+    // Si el usuario envía texto en el Paso 2, se ignora, debe usar los botones.
+    else if (currentStep === 2) {
+      return ctx.reply("⚠️ Por favor, usá los botones para *Agregar Repuesto* o /cancelar.");
+    }
+    
+    // Si el usuario envía texto en la confirmación final, se ignora, debe usar el botón.
+    else if (currentStep === "confirmacionFinal") {
+       return ctx.reply("⚠️ Por favor, usá el botón *Procesar y Confirmar Venta* o /cancelar.");
+    }
+
+  } 
+  
+  // Manejo del flujo 'agregarProveedor'
+  else if (flow === "agregarProveedor") {
+    
+    // Paso 1: Nombre
+    if (currentStep === 1) {
+      if (text.length < 3) {
+        return ctx.reply("El nombre debe tener al menos 3 caracteres.");
+      }
+      ctx.session.data.nombre = text;
+      ctx.session.step = 2;
+      return ctx.reply("Ingresá un **nombre de contacto** (ej: Juan Pérez).", { parse_mode: "Markdown" });
+    }
+    
+    // Paso 2: Contacto
+    else if (currentStep === 2) {
+      ctx.session.data.contacto = text;
+      ctx.session.step = 3;
+      return ctx.reply("Ingresá el **email** de contacto del proveedor.", { parse_mode: "Markdown" });
+    }
+    
+    // Paso 3: Email
+    else if (currentStep === 3) {
+      // Validación simple de email
+      if (!text.includes("@") || !text.includes(".")) {
+        return ctx.reply("⚠️ Email inválido. Por favor, revisá y volvé a ingresarlo.");
+      }
+      ctx.session.data.email = text;
+      ctx.session.step = 4;
+      return ctx.reply("Ingresá la **dirección física** del proveedor.", { parse_mode: "Markdown" });
+    }
+    
+    // Paso 4: Dirección
+    else if (currentStep === 4) {
+      ctx.session.data.direccion = text;
+      ctx.session.step = 5;
+      return ctx.reply("Ingresá el **teléfono** del proveedor.", { parse_mode: "Markdown" });
+    }
+    
+    // Paso 5: Teléfono -> Confirmación
+    else if (currentStep === 5) {
+      ctx.session.data.telefono = text;
+      
+      // Generar resumen
+      let resumen = `**RESUMEN DE PROVEEDOR**\n\n`;
+      resumen += `*Nombre:* ${ctx.session.data.nombre}\n`;
+      resumen += `*Contacto:* ${ctx.session.data.contacto}\n`;
+      resumen += `*Email:* ${ctx.session.data.email}\n`;
+      resumen += `*Dirección:* ${ctx.session.data.direccion}\n`;
+      resumen += `*Teléfono:* ${ctx.session.data.telefono}\n\n`;
+      resumen += "⚠️ ¿Es correcto? Presioná **Registrar Proveedor** para guardar en Sheets, o /cancelar.";
+
+      const confirmationKeyboard = Markup.keyboard([
+        ["💾 Registrar Proveedor"],
+        ["/cancelar"],
+      ])
+      .resize()
+      .oneTime();
+
+      ctx.session.step = "confirmacionProveedor";
+      return ctx.reply(resumen, { 
+        parse_mode: "Markdown",
+        reply_markup: confirmationKeyboard.reply_markup,
+      });
+    }
+
+  } 
+  
+  // Si no estamos en el flujo 'agregarProveedor', dejamos que el handler anterior o el default se encarguen.
   await next();
 });
 
-const mainKeyboard = Markup.inlineKeyboard([
-  [Markup.button.callback("📦 Registrar devolución", "registro")],
-  [Markup.button.callback("🔍 Consultar devoluciones", "consultar")],
-  [Markup.button.callback("🎟️ Ticket", "ver_tickets"), Markup.button.callback("🏢 Ver proveedores", "ver_proveedores")],
-  [Markup.button.callback("➕ Agregar proveedor", "agregar_proveedor")],
-]);
+bot.hears("💾 Registrar Proveedor", async (ctx) => {
+  if (ctx.session.flow === "agregarProveedor" && ctx.session.step === "confirmacionProveedor") {
+    await ctx.reply("⏱️ Registrando proveedor en Google Sheets...");
+    
+    let replyMessage = "✅ **Registro de Proveedor completado:**\n\n";
 
-const remitenteKeyboard = Markup.inlineKeyboard([
-  [Markup.button.callback("1️⃣ El Cholo Repuestos (CUIT: 30-71634102-6)", "remitente_ElCholo")],
-  [Markup.button.callback("2️⃣ Ramirez Cesar y Lois Gustavo S.H. (CUIT: 30-71144680-6)", "remitente_Ramirez")],
-  [Markup.button.callback("3️⃣ Tejada Carlos y Gomez Juan S.H. (CUIT: 30-70996969-9)", "remitente_Tejada")],
-  [Markup.button.callback("↩️ Volver", "main")],
-]);
+    try {
+        await recordProviderToSheets(ctx.session.data);
+        replyMessage += `  - Proveedor *${ctx.session.data.nombre}* registrado con éxito.\n`;
+        await ctx.reply(replyMessage, { parse_mode: "Markdown" });
 
-const replyMain = async (ctx) => {
-  ctx.session = {};
-  ctx.session.step = "main_menu";
-  await ctx.reply("Menú principal:", { reply_markup: mainKeyboard.reply_markup });
-};
-
-// ---------- COMANDOS ----------
-bot.start(async (ctx) => {
-  await log(`Comienzo /start chat ${ctx.chat.id}`);
-  ctx.session = {};
-  ctx.session.step = "main_menu";
-  await ctx.reply("👋 Hola! Soy el bot de devoluciones. ¿Qué querés hacer?", {
-    reply_markup: mainKeyboard.reply_markup,
-  });
-});
-
-bot.command("help", async (ctx) => {
-  await ctx.reply(
-    "/start - Menú principal\n/help - Ayuda\n/generartickets - Regenerar PDFs\n/status - Estado del bot",
-    { reply_markup: mainKeyboard.reply_markup }
-  );
-});
-
-// ---------- ACCIONES ----------
-bot.action("main", async (ctx) => {
-  try {
-    await ctx.answerCbQuery();
-  } catch {}
-  return replyMain(ctx);
-});
-
-bot.action("registro", async (ctx) => {
-  try {
-    await ctx.answerCbQuery();
-  } catch {}
-  ctx.session.flow = "registro";
-  ctx.session.step = "chooseRemitente";
-  await ctx.reply("¿A qué empresa corresponde la devolución?", {
-    reply_markup: remitenteKeyboard.reply_markup,
-  });
-});
-
-// FIX: Handler agregado para el botón "Consultar devoluciones"
-bot.action("consultar", async (ctx) => {
-  try { await ctx.answerCbQuery(); } catch {}
-  // Resetea la sesión y devuelve al menú principal
-  ctx.session = {};
-  ctx.session.step = "main_menu";
-  await ctx.reply("🔍 La función de *Consulta de Devoluciones* está en desarrollo. Por favor, usá el menú principal para otras acciones.", {
-    parse_mode: "Markdown",
-    reply_markup: mainKeyboard.reply_markup,
-  });
-});
-
-// ---------- SELECCIÓN DE PROVEEDORES CON PAGINACIÓN ----------
-bot.action(/remitente_(.+)/, async (ctx) => {
-  try { await ctx.answerCbQuery(); } catch {}
-  const remitente = ctx.match[1];
-  ctx.session.remitente = remitente;
-  ctx.session.remitenteDisplay =
-    {
-      ElCholo: "El Cholo Repuestos (CUIT: 30-71634102-6)",
-      Ramirez: "Ramirez Cesar y Lois Gustavo S.H. (CUIT: 30-71144680-6)",
-      Tejada: "Tejada Carlos y Gomez Juan S.H. (CUIT: 30-70996969-9)",
-    }[remitente] || remitente;
-
-  const proveedores = await readProviders();
-  if (!proveedores.length) {
-    await ctx.reply("⚠️ No se encontraron proveedores en la base de datos. Agregá uno desde el menú principal.", {
-      reply_markup: mainKeyboard.reply_markup,
-    });
-    return;
-  }
-
-  ctx.session.proveedores = proveedores;
-  ctx.session.page = 0;
-  ctx.session.step = "chooseProveedor";
-
-  return showProveedoresPage(ctx, 0);
-});
-
-async function showProveedoresPage(ctx, page = 0) {
-  const proveedores = ctx.session.proveedores || [];
-  const perPage = 10;
-  const totalPages = Math.ceil(proveedores.length / perPage);
-  const start = page * perPage;
-  const end = Math.min(start + perPage, proveedores.length);
-  const items = proveedores.slice(start, end);
-
-  console.log("📋 Cantidad total de proveedores:", proveedores.length);
-  console.log("➡️ Mostrando página:", page, "de", totalPages);
-  console.log("📦 Ejemplo proveedor:", proveedores[0]);
-
-  // Crear botones de proveedores
-  const botones = items.map((p, i) => [
-    Markup.button.callback(`${start + i + 1}. ${p.nombre}`, `prov_${start + i}`)
-  ]);
-
-  // Navegación
-  const nav = [];
-  if (page > 0) nav.push(Markup.button.callback("⬅️ Anterior", `page_${page - 1}`));
-  if (page < totalPages - 1) nav.push(Markup.button.callback("➡️ Siguiente", `page_${page + 1}`));
-
-  if (nav.length) botones.push(nav);
-  botones.push([Markup.button.callback("✏️ Escribir otro proveedor", "prov_manual")]);
-  botones.push([Markup.button.callback("↩️ Volver", "main")]);
-
-  const text = `Remitente seleccionado: *${ctx.session.remitenteDisplay}*\n\n` +
-               `Página ${page + 1}/${totalPages}\n` +
-               `Elegí un proveedor:`;
-
-  try {
-	  console.log("Botones generados:", botones.length);
-
-    await ctx.reply(text, {
-      parse_mode: "Markdown",
-      reply_markup: Markup.inlineKeyboard(botones)
-    });
-  } catch (err) {
-    await errorLog("Error mostrando página de proveedores: " + err.message);
-  }
-}
-
-bot.action(/page_(\d+)/, async (ctx) => {
-  try { await ctx.answerCbQuery(); } catch {}
-  const page = Number(ctx.match[1]);
-  await showProveedoresPage(ctx, page);
-});
-
-
-bot.action(/prov_(\d+)/, async (ctx) => {
-  try { await ctx.answerCbQuery(); } catch {}
-  const idx = Number(ctx.match[1]);
-  const prov = ctx.session.proveedores?.[idx];
-  if (!prov) return ctx.reply("⚠️ Proveedor inválido.", { reply_markup: mainKeyboard.reply_markup });
-  ctx.session.proveedor = prov.nombre;
-  ctx.session.step = "codigo";
-  await ctx.reply(`Proveedor seleccionado: *${prov.nombre}*.\nIngresá el código del producto:`, { parse_mode: "Markdown" });
-});
-
-bot.action("prov_manual", async (ctx) => {
-  try { await ctx.answerCbQuery(); } catch {}
-  ctx.session.step = "proveedor";
-  await ctx.reply("Escribí el nombre del proveedor manualmente:");
-});
-
-// ---------- MANEJO DE MENSAJES DE TEXTO (REGISTRO) ----------
-// Nota: La función bot.on('text') necesita un 'next()' si no está en un flujo conocido.
-// La versión original ya tenía un 'bot.on('text')' que maneja el flujo de registro.
-// Vamos a asegurar que solo el primer bot.on('text') existe para el flujo de registro
-// y el segundo bot.on('text') para agregarProveedor.
-
-bot.on("text", async (ctx, next) => {
-  const msg = ctx.message.text?.trim();
-  const step = ctx.session?.step;
-
-  if (ctx.session.flow === "registro") {
-    switch (step) {
-      case "proveedor":
-        ctx.session.proveedor = msg;
-        ctx.session.step = "codigo";
-        return ctx.reply("Ingresá el código del producto:");
-
-      case "codigo":
-        ctx.session.codigo = msg;
-        ctx.session.step = "descripcion";
-        return ctx.reply("Ingresá la descripción del producto:");
-
-      case "descripcion":
-        ctx.session.descripcion = msg;
-        ctx.session.step = "cantidad";
-        return ctx.reply("Ingresá la cantidad:");
-
-      case "cantidad":
-        ctx.session.cantidad = msg;
-        ctx.session.step = "motivo";
-        return ctx.reply("Ingresá el motivo de la devolución:");
-
-      case "motivo":
-        ctx.session.motivo = msg;
-        ctx.session.step = "remito";
-        return ctx.reply("Ingresá el número de remito/factura:");
-
-      case "remito":
-        ctx.session.remito = msg;
-        ctx.session.step = "fechaFactura";
-        return ctx.reply("Ingresá la fecha de factura (DD/MM/AAAA):");
-
-      case "fechaFactura":
-        // validar formato dd/mm/yyyy
-        if (!/^\d{2}\/\d{2}\/\d{4}$/.test(msg)) {
-          return ctx.reply("⚠️ Formato de fecha inválido. Usá DD/MM/AAAA.");
-        }
-        ctx.session.fechaFactura = msg;
-        ctx.session.step = "confirmarEnvio";
-        return ctx.reply("¿Deseas enviar la devolución por correo electrónico?", {
-          reply_markup: Markup.inlineKeyboard([
-            [Markup.button.callback("✅ Sí", "enviar_mail_si"), Markup.button.callback("❌ No", "enviar_mail_no")],
-          ]),
+    } catch (e) {
+        await errorLog(`Error en el flujo de proveedor: ${e.message}`);
+        await ctx.reply(`❌ Hubo un error al registrar el proveedor. Revisa los logs. \nDetalle del Error: \`${e.message}\``, {
+            parse_mode: "Markdown",
         });
-
-      case "esperandoCorreo":
-        ctx.session.correoManual = msg;
-        await log(`Correo ingresado manualmente: ${msg}`);
-        return confirmarDevolucion(ctx, true);
-
-      default:
-        // Si estamos en el flujo 'registro' pero en un paso no manejado, pasamos al siguiente handler
-        await next();
-        return;
     }
-  } else if (ctx.session.flow === "agregarProveedor") {
-     // El flujo de agregarProveedor se maneja en el siguiente bot.on('text')
-     await next();
-     return;
-  } else {
-     // Si no estamos en ningún flujo, pasamos al siguiente handler
-     await next();
-     return;
-  }
-});
 
-// ---------- FLUJO DE CONFIRMACIONES ----------
-bot.action("enviar_mail_si", async (ctx) => {
-  try { await ctx.answerCbQuery(); } catch {}
-  const provRow = await findProviderRowByName(ctx.session.proveedor);
-
-  if (provRow && provRow.correo) {
-    ctx.session.correoProveedor = provRow.correo;
-    await ctx.reply(`Se usará el correo registrado: ${provRow.correo}`, {
-      reply_markup: Markup.inlineKeyboard([
-        [Markup.button.callback("✅ Confirmar", "confirmar_envio")],
-        [Markup.button.callback("✏️ Ingresar otro correo", "ingresar_otro_correo")],
-      ]),
-    });
-  } else {
-    ctx.session.step = "esperandoCorreo";
-    await ctx.reply("No hay correo registrado. Ingresá el correo electrónico del proveedor:");
-  }
-});
-
-bot.action("enviar_mail_no", async (ctx) => {
-  try { await ctx.answerCbQuery(); } catch {}
-  await confirmarDevolucion(ctx, false);
-});
-
-bot.action("ingresar_otro_correo", async (ctx) => {
-  try { await ctx.answerCbQuery(); } catch {}
-  ctx.session.step = "esperandoCorreo";
-  await ctx.reply("Ingresá el correo electrónico del proveedor:");
-});
-
-bot.action("confirmar_envio", async (ctx) => {
-  try { await ctx.answerCbQuery(); } catch {}
-  await confirmarDevolucion(ctx, true);
-});
-
-// ---------- FUNCIÓN PRINCIPAL DE CONFIRMACIÓN ----------
-async function confirmarDevolucion(ctx, enviarMail) {
-  const data = {
-    remitente: ctx.session.remitente,
-    remitenteDisplay: ctx.session.remitenteDisplay,
-    proveedor: ctx.session.proveedor,
-    codigo: ctx.session.codigo,
-    descripcion: ctx.session.descripcion,
-    cantidad: ctx.session.cantidad,
-    motivo: ctx.session.motivo,
-    remito: ctx.session.remito,
-    fechaFactura: ctx.session.fechaFactura,
-    usuario: ctx.from?.first_name || "",
-  };
-
-  const fileName = `ticket_${data.proveedor.replace(/[^a-zA-Z0-9]/g, '_')}_${Date.now()}.pdf`; // Limpiar nombre para el archivo
-  const localPath = path.join(TICKETS_BASE, data.remitente, fileName);
-
-  try {
-    const pdfBuffer = await generateTicketPDF(data);
-    await fsp.writeFile(localPath, pdfBuffer);
-    await log(`📄 Ticket generado localmente: ${localPath}`);
-  } catch(e) {
-    await errorLog("❌ Error generando o guardando PDF: " + e.message);
-    await ctx.reply("⚠️ Error generando el ticket PDF. Revisa los logs.");
-    return; // Detener flujo si el PDF falla
-  }
-
-
-  let driveUrl = null;
-  try {
-    driveUrl = await uploadToDrive(data.remitente, localPath, fileName);
-  } catch (e) {
-    await errorLog("❌ Error subiendo a Drive: " + e.message);
-  }
-
-  if (sheetsInitialized) {
-    await appendRowToSheet(data.remitente, [
-      new Date().toLocaleString(),
-      data.proveedor,
-      data.codigo,
-      data.descripcion,
-      data.cantidad,
-      data.motivo,
-      data.remito,
-      data.fechaFactura,
-      data.usuario,
-    ]);
-  }
-
-  if (enviarMail) {
-    await sendEmailWithAttachment(data.remitenteDisplay, localPath, fileName, data, driveUrl);
-  }
-
-  await ctx.reply(`✅ Devolución registrada correctamente.\n${driveUrl ? "📎 Archivo subido a Drive." : ""}`, {
-    reply_markup: mainKeyboard.reply_markup,
-  });
-  ctx.session = {};
-}
-
-// ---------- TICKETS ----------
-bot.action("ver_tickets", async (ctx) => {
-  try { await ctx.answerCbQuery(); } catch {}
-  await ctx.reply("Seleccioná el remitente para ver los últimos tickets:", {
-    reply_markup: Markup.inlineKeyboard([
-      [Markup.button.callback("El Cholo", "tickets_ElCholo")],
-      [Markup.button.callback("Ramirez", "tickets_Ramirez")],
-      [Markup.button.callback("Tejada", "tickets_Tejada")],
-      [Markup.button.callback("↩️ Volver", "main")],
-    ]),
-  });
-});
-
-bot.action(/tickets_(.+)/, async (ctx) => {
-  try { await ctx.answerCbQuery(); } catch {}
-  const remitente = ctx.match[1];
-  const folder = path.join(TICKETS_BASE, remitente);
-  
-  let files = [];
-  try {
-     files = (await fsp.readdir(folder)).filter((f) => f.endsWith(".pdf"));
-  } catch(e) {
-     await errorLog(`Error leyendo carpeta de tickets ${folder}: ${e.message}`);
-     return ctx.reply("⚠️ Error al acceder a los archivos de tickets.", { reply_markup: mainKeyboard.reply_markup });
-  }
-
-  // Ordenar por fecha de modificación
-  const last5 = files
-    .map(file => ({
-        name: file,
-        path: path.join(folder, file),
-        time: fs.statSync(path.join(folder, file)).mtimeMs
-    }))
-    .sort((a, b) => b.time - a.time)
-    .slice(0, 5);
-
-  if (!last5.length) return ctx.reply("No hay tickets disponibles.", { reply_markup: mainKeyboard.reply_markup });
-  
-  for (const file of last5) {
-    await ctx.replyWithDocument({ source: file.path, filename: file.name });
-  }
-  await ctx.reply("📋 Fin de la lista de tickets.", { reply_markup: mainKeyboard.reply_markup });
-});
-// ---------- VER Y AGREGAR PROVEEDORES ----------
-// ---------- VER PROVEEDORES (LISTADO PAGINADO) ----------
-bot.action("ver_proveedores", async (ctx) => {
-  try { await ctx.answerCbQuery(); } catch {}
-  const proveedores = await readProviders();
-  if (!proveedores.length) {
-    return ctx.reply("⚠️ No hay proveedores cargados en la base de datos.", {
-      reply_markup: mainKeyboard.reply_markup,
-    });
-  }
-
-  ctx.session.proveedores = proveedores;
-  ctx.session.page = 0;
-  ctx.session.step = "verProveedores";
-
-  return showProveedoresListado(ctx, 0);
-});
-
-async function showProveedoresListado(ctx, page = 0) {
-  const proveedores = ctx.session.proveedores || [];
-  const perPage = 8;
-  const totalPages = Math.ceil(proveedores.length / perPage);
-  const start = page * perPage;
-  const items = proveedores.slice(start, start + perPage);
-
-  let text = `📋 *Proveedores registrados* (página ${page + 1}/${totalPages}):\n\n`;
-  for (let i = 0; i < items.length; i++) {
-    const p = items[i];
-    text += `${start + i + 1}. *${p.nombre}*`;
-    if (p.correo) text += ` (${p.correo})`;
-    if (p.direccion) text += ` — ${p.direccion}`;
-    text += "\n";
-  }
-
-  const nav = [];
-  if (page > 0) nav.push(Markup.button.callback("⬅️ Anterior", `provlist_${page - 1}`));
-  if (page < totalPages - 1) nav.push(Markup.button.callback("➡️ Siguiente", `provlist_${page + 1}`));
-
-  const botones = [];
-  if (nav.length) botones.push(nav);
-  botones.push([Markup.button.callback("↩️ Volver", "main")]);
-
-  await ctx.reply(text, {
-    parse_mode: "Markdown",
-    reply_markup: Markup.inlineKeyboard(botones),
-  });
-}
-
-bot.action(/provlist_(\d+)/, async (ctx) => {
-  try { await ctx.answerCbQuery(); } catch {}
-  const newPage = Number(ctx.match[1]);
-  ctx.session.page = newPage;
-  return showProveedoresListado(ctx, newPage);
-});
-
-
-bot.action("agregar_proveedor", async (ctx) => {
-  try { await ctx.answerCbQuery(); } catch {}
-  ctx.session.flow = "agregarProveedor";
-  ctx.session.step = "nombreProveedor";
-  await ctx.reply("🆕 Ingresá el *nombre* del nuevo proveedor:", { parse_mode: "Markdown" });
-});
-
-// Flujo de agregar proveedor (bot.on 'text' separado para evitar conflictos de flujo)
-bot.on("text", async (ctx, next) => {
-  const msg = ctx.message.text?.trim();
-  if (ctx.session.flow === "agregarProveedor") {
-    switch (ctx.session.step) {
-      case "nombreProveedor":
-        ctx.session.nuevoProveedor = { nombre: msg };
-        ctx.session.step = "correoProveedor";
-        return ctx.reply("📧 Ingresá el correo del proveedor (o escribí '-' si no tiene):");
-      case "correoProveedor":
-        ctx.session.nuevoProveedor.correo = msg === "-" ? "" : msg;
-        ctx.session.step = "direccionProveedor";
-        return ctx.reply("🏢 Ingresá la dirección del proveedor (o '-' si no aplica):");
-      case "direccionProveedor":
-        ctx.session.nuevoProveedor.direccion = msg === "-" ? "" : msg;
-        if (sheetsInitialized) {
-          try {
-            await sheetsClient.spreadsheets.values.append({
-              spreadsheetId: SHEET_ID,
-              range: "Proveedores!A:C",
-              valueInputOption: "USER_ENTERED",
-              requestBody: {
-                values: [[
-                  ctx.session.nuevoProveedor.nombre,
-                  ctx.session.nuevoProveedor.correo,
-                  ctx.session.nuevoProveedor.direccion
-                ]]
-              },
-            });
-            await log(`✅ Nuevo proveedor agregado a Sheets: ${ctx.session.nuevoProveedor.nombre}`);
-          } catch (e) {
-             await errorLog("❌ Error agregando proveedor a Sheets: " + e.message);
-          }
-        }
-        await ctx.reply("✅ Proveedor agregado correctamente.", { reply_markup: mainKeyboard.reply_markup });
-        ctx.session = {};
-        return;
-    }
+    ctx.session = {};
+    return replyMain(ctx);
   } else {
     // Si no estamos en el flujo 'agregarProveedor', dejamos que el handler anterior o el default se encarguen.
     await next();
   }
 });
 
+
 // Handler de texto por defecto si nada anterior lo manejó
 bot.on('text', async (ctx) => {
-    // Este es un fallback si el mensaje de texto no fue manejado por los flujos.
-    return ctx.reply("⚠️ No entendí, por favor usá el menú.", {
-        reply_markup: mainKeyboard.reply_markup,
-    });
+  // Este es un fallback si el mensaje de texto no fue manejado por los flujos.
+  return ctx.reply("⚠️ No entendí, por favor usá el menú.", {
+    reply_markup: mainKeyboard.reply_markup,
+  });
 });
 
-// ---------- APP ----------
+// ---------- APP Y LANZAMIENTO ----------
 const app = express();
 app.get("/", (req, res) => res.send("Bot activo"));
-app.listen(PORT, async () => {
-  await log(`🚀 Servidor Express escuchando en puerto ${PORT}`);
+
+// init and launch
+(async ()=>{
   await ensureLocalFolders();
-  await initSheets();
-  initMailer();
-});
+  
+  // Inicializamos Sheets primero...
+  await initSheets(); 
+  initMailer(); // Inicializamos el mailer
+
+  if (WEBHOOK_URL) {
+    // Modo Webhook (Recomendado para producción para evitar error 409)
+    const secretPath = `/telegraf/${BOT_TOKEN}`; 
+    
+    // 1. Configurar Express para escuchar las actualizaciones de Telegram
+    app.use(bot.webhookCallback(secretPath));
+    
+    // 2. Establecer el webhook en Telegram
+    try {
+      await bot.telegram.setWebhook(`${WEBHOOK_URL}${secretPath}`);
+      await log(`✅ Bot en modo Webhook. Escuchando en ${WEBHOOK_URL}${secretPath}`);
+      botStatus = "conectado (webhook)";
+    } catch (e) {
+      await errorLog(`Error al configurar Webhook: ${e.message}`);
+      botStatus = "ERROR (webhook)";
+    }
+  } else {
+    // Modo Polling (Usado para desarrollo, puede causar error 409 en despliegues con múltiples procesos)
+    await log("⚠️ WEBHOOK_URL no definido. Usando Telegraf Polling.");
+    try {
+      await bot.launch();
+      botStatus = "conectado (polling)";
+    } catch (e) {
+      await errorLog(`Error al iniciar Polling: ${e.message}`);
+      botStatus = "ERROR (polling)";
+    }
+  }
+
+  await log(`✅ Bot de Telegram iniciado. Estado: ${botStatus}`);
+  
+  // Lanzar Express
+  app.listen(PORT, async () => {
+    await log(`🚀 Servidor Express escuchando en puerto ${PORT}`);
+  });
+  
+  // SOLUCIÓN: Adjuntar los manejadores de detención
+  process.once('SIGINT', () => bot.stop('SIGINT'));
+  process.once('SIGTERM', () => bot.stop('SIGTERM'));
+})();
 
 // ---------- ERRORES ----------
 bot.catch(async (err, ctx) => {
   // Aseguramos que el error se loguee en un solo lugar
-  const errorMessage = `Unhandled error: ${err.message}`;
+  const errorMessage = `Unhandled error: ${err.message} en contexto de ${ctx.updateType}`;
   // Evitamos doble log si ya fue logueado en la función de confirmación.
   if (!errorMessage.includes("PDF") && !errorMessage.includes("Drive")) { 
-     await errorLog(errorMessage);
+    await errorLog(errorMessage);
   }
   // Intenta enviar un mensaje de error al usuario si es posible
   try {
-      await ctx.reply("🚨 Ocurrió un error inesperado. Por favor, volvé a intentarlo desde el menú principal.", {
-          reply_markup: mainKeyboard.reply_markup,
-      });
-  } catch {}
+    await ctx.reply("🚨 Ocurrió un error inesperado. Por favor, volvé a intentarlo desde el menú principal.", {
+      reply_markup: mainKeyboard.reply_markup,
+    });
+  } catch (e) {
+    // Si no se puede ni responder, solo loguear
+    console.error("Error FATAL: No se pudo enviar mensaje de error al usuario.");
+  }
 });
-
-
-// ---------- ARRANQUE DEL BOT ----------
-bot.launch();
-log("🤖 Bot iniciado correctamente.");
