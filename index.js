@@ -1,22 +1,16 @@
 // IMPORTANTE: Carga de dotenv usando require (CommonJS)
 // Esto asegura que las variables de entorno se carguen síncronamente antes de la inicialización
 // de módulos ES, resolviendo el error "BOT_TOKEN no definido".
-import dotenv from "dotenv";
-dotenv.config();
-
-// === IMPORTS ===
-// fs (promise) para operaciones asíncronas
-import { promises as fs } from "fs"; 
-// fs (sync) para operaciones síncronas (como mkdirSync y existsSync)
-import * as syncFs from "fs"; 
-import path from "path";
-import express from "express";
-import { Telegraf, Markup } from "telegraf";
-import TelegrafLocalSession from "telegraf-session-local";
-import PDFDocument from "pdfkit";
-import { google } from "googleapis";
-import axios from "axios";
-import nodemailer from "nodemailer";
+const { promises: fs } = require("fs");
+const path = require("path");
+const express = require("express");
+const { Telegraf, Markup } = require("telegraf");
+const TelegrafLocalSession = require("telegraf-session-local");
+const PDFDocument = require("pdfkit");
+const { google } = require("googleapis");
+const axios = require("axios");
+const nodemailer = require("nodemailer");
+require("dotenv").config();
 
 // === CONFIGURACIÓN GENERAL ===
 // Las variables ahora están disponibles en process.env
