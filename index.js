@@ -7,11 +7,13 @@ import PDFDocument from "pdfkit";
 import { google } from "googleapis";
 import axios from "axios";
 import nodemailer from "nodemailer";
-import dotenv from "dotenv";
+import dotenv from "dotenv"; // <--- Importación de dotenv
 
+// Ejecutar la configuración de dotenv inmediatamente para cargar las variables
 dotenv.config();
 
 // === CONFIGURACIÓN GENERAL ===
+// Ahora, BOT_TOKEN debería estar disponible si el archivo .env está en la raíz
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const OWNER_CHAT_ID = process.env.OWNER_CHAT_ID || null;
 const SHEET_ID = process.env.GOOGLE_SHEET_ID;
@@ -26,7 +28,8 @@ const GMAIL_PASS = process.env.MAIL_PASS;
 // Lista de IDs de Telegram permitidos para usar el bot
 const ALLOWED_USERS = process.env.ALLOWED_USERS ? process.env.ALLOWED_USERS.split(',').map(id => id.trim()) : [];
 
-if (!BOT_TOKEN) throw new Error("FATAL: BOT_TOKEN no definido.");
+// La comprobación de error fallaba porque BOT_TOKEN era undefined en ese momento.
+if (!BOT_TOKEN) throw new Error("FATAL: BOT_TOKEN no definido. Revisá tu archivo .env.");
 
 // === EXPRESS & ESTADO ===
 const app = express();
@@ -168,6 +171,7 @@ async function generateTicketPDF(data) {
       const BLUE = '#0B3B70';
       
       try {
+        // Asegúrate de que el logo exista en la ruta especificada.
         const logo = await fs.readFile(LOGO_PATH); 
         doc.image(logo, 40, 40, { width: 120 });
       } catch {
