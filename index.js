@@ -11,7 +11,8 @@ const { google } = require("googleapis");
 const axios = require("axios");
 const nodemailer = require("nodemailer");
 require("dotenv").config();
-
+console.log("DEBUG dotenv →", process.env.BOT_TOKEN ? "BOT_TOKEN OK" : "BOT_TOKEN NO DEFINIDO");
+console.log("CWD:", process.cwd());
 // === CONFIGURACIÓN GENERAL ===
 // Las variables ahora están disponibles en process.env
 const BOT_TOKEN = process.env.BOT_TOKEN;
