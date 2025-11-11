@@ -1,13 +1,17 @@
 // IMPORTANTE: Carga de dotenv usando require (CommonJS)
-// Esto asegura que las variables de entorno se carguen síncronamente antes de la inicialización.
+// Esto asegura que las variables de entorno se carguen síncronamente antes de la inicialización
+// de módulos ES, resolviendo el error "BOT_TOKEN no definido".
 try {
   require('dotenv').config();
 } catch (e) {
   console.error("Error al cargar dotenv. Asegurate de tener el módulo instalado: npm install dotenv");
 }
 
-
-import { promises as fs } from "fs";
+// === IMPORTS ===
+// fs (promise) para operaciones asíncronas
+import { promises as fs } from "fs"; 
+// fs (sync) para operaciones síncronas (como mkdirSync y existsSync)
+import * as syncFs from "fs"; 
 import path from "path";
 import express from "express";
 import { Telegraf, Markup } from "telegraf";
@@ -16,7 +20,6 @@ import PDFDocument from "pdfkit";
 import { google } from "googleapis";
 import axios from "axios";
 import nodemailer from "nodemailer";
-// Quitamos la importación de dotenv de aquí
 
 // === CONFIGURACIÓN GENERAL ===
 // Las variables ahora están disponibles en process.env
@@ -156,10 +159,13 @@ async function appendRowToSheet(sheetName, rowData) {
 function ensureLocalFolders() {
   const base = path.join(process.cwd(), 'tickets');
   const remitentes = ['ElCholo', 'Ramirez', 'Tejada'];
-  if (!fs.existsSync(base)) fs.mkdirSync(base, { recursive: true });
+  
+  // CORRECCIÓN: Usar syncFs para operaciones síncronas
+  if (!syncFs.existsSync(base)) syncFs.mkdirSync(base, { recursive: true });
+  
   remitentes.forEach(r => {
     const dir = path.join(base, r);
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir);
+    if (!syncFs.existsSync(dir)) syncFs.mkdirSync(dir);
   });
   console.log('✅ Carpetas locales de tickets aseguradas.');
 }
@@ -336,7 +342,7 @@ bot.action("guardar_devolucion", async (ctx) => {
     
     // 3. Guardar PDF localmente (para 'ver_tickets' posteriores)
     const localPath = path.join(process.cwd(), 'tickets', s.remitenteKey, pdfFilename);
-    await fs.writeFile(localPath, pdfBuffer);
+    await fs.writeFile(localPath, pdfBuffer); // Usando fs (promises)
     
     // 4. Enviar PDF al usuario
     await ctx.replyWithDocument(
@@ -447,7 +453,7 @@ bot.action(/tickets_(.+)/, async ctx => {
   const folder = path.join(process.cwd(), 'tickets', remitente); 
   
   try {
-    const files = await fs.readdir(folder); 
+    const files = await fs.readdir(folder); // Usando fs (promises)
     // Filtra PDFs, toma los últimos 5 y los invierte (para ver el más nuevo primero)
     const pdfFiles = files.filter(f => f.endsWith('.pdf')).slice(-5).reverse();
     
@@ -456,7 +462,7 @@ bot.action(/tickets_(.+)/, async ctx => {
     await ctx.reply(`Enviando los últimos ${pdfFiles.length} tickets de **${remitente}**...`, { parse_mode: 'Markdown'});
     
     for (const file of pdfFiles) {
-      const buffer = await fs.readFile(path.join(folder, file)); 
+      const buffer = await fs.readFile(path.join(folder, file)); // Usando fs (promises)
       await ctx.replyWithDocument({ source: buffer, filename: file });
     }
     
