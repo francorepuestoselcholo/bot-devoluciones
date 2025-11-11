@@ -1,223 +1,309 @@
 import { promises as fs } from "fs";
+import path from "path";
+import express from "express";
 import { Telegraf, Markup } from "telegraf";
-import LocalSession from "telegraf-session-local";
+import TelegrafLocalSession from "telegraf-session-local";
 import PDFDocument from "pdfkit";
 import { google } from "googleapis";
 import axios from "axios";
+import nodemailer from "nodemailer";
 import dotenv from "dotenv";
 
 dotenv.config();
 
-// --- CONFIG / ENV ---
+// === CONFIGURACIÓN GENERAL ===
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const OWNER_CHAT_ID = process.env.OWNER_CHAT_ID || null;
-const SHEET_ID =
-  process.env.GOOGLE_SHEET_ID ||
-  "1BFGsZaUwvxV4IbGgXNOp5IrMYLVn-czVYpdxTleOBgo";
-const GOOGLE_SERVICE_ACCOUNT_FILE =
-  "./gen-lang-client-0104843305-3b7345de7ec0.json";
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY || null;
-const LOG_FILE = "logs.txt";
-const LOGO_PATH = "./REPUESTOS EL CHOLO LOGO.png";
+const SHEET_ID = process.env.GOOGLE_SHEET_ID;
+// El archivo de credenciales del Service Account (debe estar en el disco)
+const GOOGLE_SERVICE_ACCOUNT_FILE = './gen-lang-client-0104843305-3b7345de7ec0.json'; 
+const PORT = process.env.PORT || 3000;
+const LOG_FILE = 'logs.txt';
+const LOGO_PATH = './REPUESTOS EL CHOLO LOGO.png'; // Ruta de la imagen del logo
+const DRIVE_FOLDER_ID = '1ByMDQDSWku135s1SwForGtWvyl2gcRSM'; 
+const GMAIL_USER = process.env.MAIL_USER; 
+const GMAIL_PASS = process.env.MAIL_PASS; 
+// Lista de IDs de Telegram permitidos para usar el bot
+const ALLOWED_USERS = process.env.ALLOWED_USERS ? process.env.ALLOWED_USERS.split(',').map(id => id.trim()) : [];
 
-if (!BOT_TOKEN)
-  throw new Error("FATAL: BOT_TOKEN no definido en variables de entorno.");
+if (!BOT_TOKEN) throw new Error("FATAL: BOT_TOKEN no definido.");
 
-// --- GLOBALES ---
-let sheets;
+// === EXPRESS & ESTADO ===
+const app = express();
+let botStatus = 'iniciando';
 let sheetsInitialized = false;
-let sheetsError = false;
+let sheetsClient = null;
+let driveClient = null;
+let transporter = null;
 
-// --- CONFIGURAR BOT ---
+// === BOT SETUP ===
 const bot = new Telegraf(BOT_TOKEN);
-const localSession = new LocalSession({ database: "session_db.json" });
+// Middleware para manejar la sesión local (para el flujo paso a paso)
+const localSession = new TelegrafLocalSession({ database: path.resolve(process.cwd(), 'session_db.json') });
 bot.use(localSession.middleware());
 
-// --- FUNCIONES AUXILIARES ---
-
-async function appendLog(message) {
-  const timestamp = new Date().toISOString();
-  const logEntry = `[${timestamp}] ${message}\n`;
-  try {
-    await fs.appendFile(LOG_FILE, logEntry, "utf8");
-  } catch (err) {
-    console.error("Error escribiendo en el log:", err.message);
-  }
-}
-
-// Genera un PDF simple de ejemplo
-async function generateTicketPDF(data) {
-  return new Promise((resolve) => {
-    const doc = new PDFDocument();
-    const buffers = [];
-    doc.on("data", buffers.push.bind(buffers));
-    doc.on("end", () => {
-      const pdfBuffer = Buffer.concat(buffers);
-      resolve(pdfBuffer);
-    });
-
-    doc.fontSize(16).text("TICKET DE DEVOLUCI¨®N", { align: "center" });
-    doc.moveDown();
-    doc.fontSize(10).text(`Proveedor: ${data.proveedor}`);
-    doc.text(`C¨®digo: ${data.codigo}`);
-    doc.text(`Descripci¨®n: ${data.descripcion}`);
-    doc.text(`Cantidad: ${data.cantidad}`);
-    doc.text(`Motivo: ${data.motivo}`);
-    doc.text(`Remito: ${data.remito}`);
-    doc.text(`Fecha Factura: ${data.fechaFactura}`);
-    doc.end();
-  });
-}
-
-async function replyMain(ctx) {
-  const keyboard = Markup.inlineKeyboard([
-    [Markup.button.callback("Registrar Devoluci¨®n", "registrar_devolucion")],
-  ]);
-  return ctx.reply("Seleccion¨¢ una opci¨®n:", keyboard);
-}
-
-// --- GOOGLE SHEETS ---
-
-async function initSheets() {
-  try {
-    const EXAMPLE_SHEET_ID =
-      "1BFGsZaUwvxV4IbGgXNOp5IrMYLVn-czVYpdxTleOBgo";
-    if (SHEET_ID === EXAMPLE_SHEET_ID) {
-      console.error(
-        "? ERROR: Est¨¢s usando el ID de hoja de c¨¢lculo de EJEMPLO. Reemplazalo por tu ID real en la variable SHEET_ID."
-      );
-      sheetsError = true;
-      return;
+// Middleware de autenticación: Verifica si el usuario está en la lista de permitidos
+bot.use(async (ctx, next) => {
+    const userId = String(ctx.from?.id);
+    if (!userId || ALLOWED_USERS.length === 0) {
+        // Permitir si no hay lista de usuarios definida (modo desarrollo)
+        await next();
+    } else if (ALLOWED_USERS.includes(userId)) {
+        await next();
+    } else {
+        console.log(`Acceso denegado a usuario: ${userId}`);
+        await ctx.reply("⛔ Acceso denegado. Contactá al administrador.");
     }
+});
 
-    const credentials = JSON.parse(
-      await fs.readFile(GOOGLE_SERVICE_ACCOUNT_FILE, "utf8")
+
+// === TECLADOS ===
+const mainKeyboard = Markup.inlineKeyboard([
+  [Markup.button.callback('📦 Registrar devolución', 'registro')],
+  [Markup.button.callback('🎟️ Ticket', 'ver_tickets')],
+  [Markup.button.callback('🔍 Consultar devoluciones', 'consultar')],
+  [Markup.button.callback('🏢 Ver proveedores', 'ver_proveedores')],
+  [Markup.button.callback('➕ Agregar proveedor', 'agregar_proveedor')]
+]);
+
+const remitenteKeyboard = Markup.inlineKeyboard([
+  [Markup.button.callback('1️⃣ El Cholo Repuestos (CUIT: 30716341026)', 'remitente_ElCholo')],
+  [Markup.button.callback('2️⃣ Ramirez Cesar y Lois Gustavo S.H. (CUIT: 30711446806)', 'remitente_Ramirez')],
+  [Markup.button.callback('3️⃣ Tejada Carlos y Gomez Juan S.H. (CUIT: 30709969699)', 'remitente_Tejada')],
+  [Markup.button.callback('↩️ Volver', 'main')]
+]);
+
+const motivosKeyboard = Markup.inlineKeyboard([
+  [Markup.button.callback('❌ Mal Pedido', 'motivo_Mal_Pedido'), Markup.button.callback('🔨 Fallado', 'motivo_Fallado')],
+  [Markup.button.callback('📦 Error de Envío', 'motivo_Error_Envio'), Markup.button.callback('✏️ Otro Motivo', 'motivo_Otro')],
+]);
+
+
+// === FUNCIONES BASE ===
+
+async function appendLog(msg) {
+  const ts = new Date().toISOString();
+  await fs.appendFile(LOG_FILE, `[${ts}] ${msg}\n`, 'utf8');
+}
+
+// Inicializa el transportador de correo Nodemailer
+function initMailer() {
+    if (!GMAIL_USER || !GMAIL_PASS) {
+        console.warn('⚠️ GMAIL_USER o GMAIL_PASS no configurados. El envío de correos estará deshabilitado.');
+        return;
+    }
+    transporter = nodemailer.createTransport({
+        service: 'gmail',
+        auth: { user: GMAIL_USER, pass: GMAIL_PASS }
+    });
+    console.log('✅ Nodemailer inicializado.');
+}
+
+// Inicializa el cliente de Google Sheets y Drive
+async function initSheets() {
+  console.log('Inicializando Google Sheets y Drive...');
+  try {
+    const keyFileContent = await fs.readFile(GOOGLE_SERVICE_ACCOUNT_FILE, 'utf8');
+    const key = JSON.parse(keyFileContent);
+    const privateKey = key.private_key.replace(/\\n/g, '\n'); 
+
+    // Autenticación JWT con los scopes necesarios
+    const jwt = new google.auth.JWT(
+        key.client_email, 
+        null, 
+        privateKey, 
+        [
+            'https://www.googleapis.com/auth/spreadsheets',
+            'https://www.googleapis.com/auth/drive'
+        ]
     );
 
-    const auth = new google.auth.GoogleAuth({
-      credentials,
-      scopes: ["https://www.googleapis.com/auth/spreadsheets"],
-    });
-
-    sheets = google.sheets({ version: "v4", auth });
+    await jwt.authorize();
+    sheetsClient = google.sheets({ version: 'v4', auth: jwt });
+    driveClient = google.drive({ version: 'v3', auth: jwt });
     sheetsInitialized = true;
-    console.log("? Google Sheets inicializado correctamente.");
-  } catch (error) {
-    console.error("? ERROR FATAL al inicializar Google Sheets:", error.message);
-    console.error("?? FALL¨® LA CONEXI¨®N A SHEETS. Verific¨¢:");
-    console.error("   1. Que el archivo de credenciales existe:", GOOGLE_SERVICE_ACCOUNT_FILE);
-    console.error("   2. Que compartiste la hoja con el email del servicio de cuenta.");
-    console.error("   3. Que el SHEET_ID es correcto.");
-    sheetsError = true;
-    sheetsInitialized = false;
+    console.log('✅ Google API inicializado (Sheets y Drive)');
+  } catch (e) {
+    console.error('❌ Error al inicializar Google API. Asegurate que GOOGLE_SERVICE_ACCOUNT_FILE exista y sea válido:', e.message);
   }
 }
 
+// Añade una fila de datos a una hoja específica
 async function appendRowToSheet(sheetName, rowData) {
-  if (!sheetsInitialized || sheetsError || !sheets) {
-    throw new Error("El cliente de Google Sheets no est¨¢ inicializado o fall¨®.");
+  if (!sheetsInitialized || !sheetsClient) {
+    throw new Error("El cliente de Google Sheets no está inicializado o falló.");
   }
 
-  await sheets.spreadsheets.values.append({
+  const response = await sheetsClient.spreadsheets.values.append({
     spreadsheetId: SHEET_ID,
     range: `${sheetName}!A:A`,
     valueInputOption: "USER_ENTERED",
     resource: { values: [rowData] },
   });
+  return response;
 }
 
-// --- HANDLERS DEL BOT ---
+// Crea las carpetas locales para guardar los tickets si no existen
+function ensureLocalFolders() {
+  const base = path.join(process.cwd(), 'tickets');
+  const remitentes = ['ElCholo', 'Ramirez', 'Tejada'];
+  if (!fs.existsSync(base)) fs.mkdirSync(base, { recursive: true });
+  remitentes.forEach(r => {
+    const dir = path.join(base, r);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir);
+  });
+  console.log('✅ Carpetas locales de tickets aseguradas.');
+}
 
-bot.start(replyMain);
+// === GENERAR PDF ===
+async function generateTicketPDF(data) {
+  return new Promise(async (resolve, reject) => {
+    try {
+      const doc = new PDFDocument({ size: 'A4', margin: 40 });
+      const chunks = [];
+      doc.on('data', c => chunks.push(c));
+      doc.on('end', () => resolve(Buffer.concat(chunks)));
 
-bot.action("registrar_devolucion", (ctx) => {
-  ctx.session.step = "awaiting_proveedor";
-  ctx.session.data = {};
-  return ctx.reply("Ingres¨¢ el nombre del proveedor:");
-});
+      const RED = '#C8102E';
+      const BLUE = '#0B3B70';
+      
+      try {
+        const logo = await fs.readFile(LOGO_PATH); 
+        doc.image(logo, 40, 40, { width: 120 });
+      } catch {
+        doc.fillColor(RED).fontSize(10).text('REPUESTOS EL CHOLO (Logo faltante)', 40, 40);
+      }
 
-bot.on("text", async (ctx) => {
-  const step = ctx.session?.step;
-  const text = ctx.message.text.trim();
+      doc.fillColor(BLUE).fontSize(20).font('Helvetica-Bold').text('Ticket de Devolución', { align: 'right' });
+      doc.moveDown(1);
+      doc.fontSize(12).fillColor('black').text(`Fecha: ${new Date().toLocaleString()}`);
+      doc.text(`Remitente: ${data.remitente}`);
+      doc.text(`Proveedor: ${data.proveedor}`);
+      doc.text(`Código: ${data.codigo}`);
+      doc.text(`Descripción: ${data.descripcion}`);
+      doc.text(`Cantidad: ${data.cantidad}`);
+      doc.text(`Motivo: ${data.motivo}`);
+      doc.text(`N° Remito/Factura: ${data.remito}`);
+      doc.text(`Fecha factura: ${data.fechaFactura}`);
+      doc.end();
+    } catch (err) { reject(err); }
+  });
+}
 
-  if (step === "awaiting_proveedor") {
-    ctx.session.data.proveedor = text;
-    ctx.session.step = "awaiting_codigo";
-    return ctx.reply("Ingres¨¢ el c¨®digo del art¨ªculo:");
-  } else if (step === "awaiting_codigo") {
-    ctx.session.data.codigo = text;
-    ctx.session.step = "awaiting_descripcion";
-    return ctx.reply("Ingres¨¢ la descripci¨®n:");
-  } else if (step === "awaiting_descripcion") {
-    ctx.session.data.descripcion = text;
-    ctx.session.step = "awaiting_cantidad";
-    return ctx.reply("Ingres¨¢ la cantidad:");
-  } else if (step === "awaiting_cantidad") {
-    ctx.session.data.cantidad = text;
-    ctx.session.step = "awaiting_motivo";
-    const keyboard = Markup.inlineKeyboard([
-      [Markup.button.callback("? Mal Pedido", "motivo_Mal_Pedido")],
-      [Markup.button.callback("?? Fallado", "motivo_Fallado")],
-      [Markup.button.callback("?? Error de Env¨ªo", "motivo_Error_Env¨ªo")],
-    ]);
-    return ctx.reply("Seleccion¨¢ el motivo de la devoluci¨®n:", keyboard);
+// === ENVIAR CORREO ===
+async function sendMailWithPDF(buffer, filename, data) {
+  if (!transporter) {
+    console.warn('Correo no enviado: El transportador de correo no está inicializado.');
+    return;
   }
+  
+  const html = `
+  <h2>Nuevo Ticket de Devolución Registrado</h2>
+  <p>Remitente: <b>${data.remitente}</b></p>
+  <p>Proveedor: <b>${data.proveedor}</b></p>
+  <p>Motivo: ${data.motivo}</p>
+  <p>Código: ${data.codigo}</p>
+  <p>Cantidad: ${data.cantidad}</p>
+  <p>Se adjunta el ticket en PDF.</p>`;
 
-  return ctx.reply("Comando desconocido. Us¨¢ /start para iniciar.");
-});
+  await transporter.sendMail({
+    from: `"Repuestos El Cholo Bot" <${GMAIL_USER}>`,
+    to: 'info@repuestoselcholo.com.ar', 
+    subject: `Nueva devolución registrada - ${data.proveedor}`,
+    html,
+    attachments: [{ filename, content: buffer }]
+  });
+}
 
-bot.action(/^motivo_/, (ctx) => {
-  const motivo = ctx.match[0].substring(7).replace(/_/g, " ");
-  ctx.session.data.motivo = motivo;
-  ctx.session.step = "awaiting_remito";
-  ctx.editMessageReplyMarkup(null);
-  return ctx.reply(`Motivo seleccionado: ${motivo}. Ahora ingres¨¢ el n¨²mero de remito:`);
-});
 
-bot.on("text", async (ctx) => {
-  if (ctx.session?.step === "awaiting_remito") {
-    ctx.session.data.remito = ctx.message.text.trim();
-    ctx.session.step = "awaiting_fechaFactura";
-    return ctx.reply("Ingres¨¢ la fecha de la factura (ej: DD/MM/AAAA):");
-  } else if (ctx.session?.step === "awaiting_fechaFactura") {
-    ctx.session.data.fechaFactura = ctx.message.text.trim();
-    ctx.session.step = "confirm_and_save";
+// === HANDLERS DEL BOT ===
 
-    const s = ctx.session.data;
-    const resumen = `\n\nResumen:\nProveedor: ${s.proveedor}\nC¨®digo: ${s.codigo}\nDescripci¨®n: ${s.descripcion}\nCantidad: ${s.cantidad}\nMotivo: ${s.motivo}\nRemito: ${s.remito}\nFecha Factura: ${s.fechaFactura}`;
-
-    const keyboard = Markup.inlineKeyboard([
-      [Markup.button.callback("? Confirmar y Guardar", "guardar_devolucion")],
-      [Markup.button.callback("?? Cancelar", "cancelar")],
-    ]);
-
-    return ctx.reply(
-      `Datos listos para guardar: ${resumen}\n\n?Dese¨¢s confirmar la devoluci¨®n?`,
-      keyboard
-    );
-  }
-});
-
-bot.action("cancelar", (ctx) => {
+// /start
+bot.start(async ctx => {
   ctx.session = {};
-  return replyMain(ctx);
+  await ctx.reply('👋 ¡Hola! Soy el Bot de Devoluciones. ¿Qué querés hacer?', { reply_markup: mainKeyboard.reply_markup });
 });
 
+// Volver al menú principal
+bot.action('main', async ctx => {
+  try { await ctx.answerCbQuery(); } catch {}
+  ctx.session = {};
+  await ctx.reply('Menú principal:', { reply_markup: mainKeyboard.reply_markup });
+});
+
+// /help
+bot.command('help', async ctx => {
+  const helpText = `
+Comandos disponibles:
+/start - Mostrar menú principal
+/help - Mostrar esta ayuda`;
+  await ctx.reply(helpText);
+});
+
+// --- FLUJO DE REGISTRO: Inicio ---
+bot.action('registro', async ctx => {
+  try { await ctx.answerCbQuery(); } catch {}
+  ctx.session.step = 'awaiting_remitente';
+  ctx.session.data = {};
+  await ctx.reply('Seleccioná el remitente:', { reply_markup: remitenteKeyboard.reply_markup });
+});
+
+// --- FLUJO DE REGISTRO: Remitente seleccionado ---
+bot.action(/^remitente_(.+)/, async ctx => {
+  try { await ctx.answerCbQuery(); } catch {}
+  const remitenteKey = ctx.match[1];
+  const remitentesMap = {
+    'ElCholo': 'El Cholo Repuestos',
+    'Ramirez': 'Ramirez Cesar y Lois Gustavo S.H.',
+    'Tejada': 'Tejada Carlos y Gomez Juan S.H.'
+  };
+  const remitenteName = remitentesMap[remitenteKey] || 'Desconocido';
+  
+  ctx.session.data.remitenteKey = remitenteKey;
+  ctx.session.data.remitente = remitenteName;
+  ctx.session.step = 'awaiting_proveedor';
+
+  await ctx.editMessageText(`Remitente seleccionado: ${remitenteName}.`);
+  await ctx.reply("Ingresá el nombre del **Proveedor**:", { parse_mode: 'Markdown' });
+});
+
+// --- FLUJO DE REGISTRO: Motivo seleccionado ---
+bot.action(/^motivo_(.+)/, async ctx => {
+  try { await ctx.answerCbQuery(); } catch {}
+  const motivoKey = ctx.match[1];
+  
+  if (motivoKey === 'Otro') {
+    ctx.session.step = 'awaiting_otro_motivo';
+    await ctx.editMessageText("Ingresá el **motivo específico**:", { parse_mode: 'Markdown' });
+  } else {
+    ctx.session.data.motivo = motivoKey.replace(/_/g, ' ');
+    ctx.session.step = 'awaiting_remito';
+    await ctx.editMessageText(`Motivo seleccionado: ${ctx.session.data.motivo}.`);
+    await ctx.reply("Ingresá el **N° Remito/Factura**:", { parse_mode: 'Markdown' });
+  }
+});
+
+// --- GUARDAR DEVOLUCIÓN: Confirmación y proceso final ---
 bot.action("guardar_devolucion", async (ctx) => {
+  try { await ctx.answerCbQuery(); } catch {}
+  await ctx.editMessageText("⏳ Procesando devolución. Esperá un momento...");
+
   const s = ctx.session.data;
   const tab = "DEVOLUCIONES";
+  const username = ctx.from?.first_name || ctx.from?.username || String(ctx.chat.id);
+  const pdfFilename = `ticket_${s.remitenteKey}_${new Date().toISOString().replace(/:/g, '-')}.pdf`;
 
-  if (sheetsError) {
-    await ctx.editMessageText(
-      "? ERROR CR¨ªTICO: El bot no pudo conectarse a Google Sheets. Verific¨¢ los logs del servidor para ver el error de autenticaci¨®n o permisos."
-    );
+  if (!sheetsInitialized || !sheetsClient) {
+    await ctx.reply("🚨 ERROR CRÍTICO: El bot no pudo conectarse a Google Sheets. Verificá los logs del servidor.");
     ctx.session = {};
-    return replyMain(ctx);
+    return;
   }
 
+  // Estructura de la fila para Google Sheets
   const row = [
     new Date().toLocaleString("es-AR", { timeZone: "America/Argentina/Buenos_Aires" }),
-    ctx.from?.first_name || ctx.from?.username || String(ctx.chat.id),
+    username,
+    s.remitente || "",
     s.proveedor || "",
     s.codigo || "",
     s.descripcion || "",
@@ -228,72 +314,189 @@ bot.action("guardar_devolucion", async (ctx) => {
     String(ctx.chat.id),
   ];
 
-  let pdfSent = false;
-
+  let pdfBuffer = null;
+  
   try {
+    // 1. Generar PDF
+    pdfBuffer = await generateTicketPDF(s);
+    
+    // 2. Guardar en Sheets
     await appendRowToSheet(tab, row);
-    await ctx.editMessageText("? Devoluci¨®n registrada correctamente. Generando ticket...");
-    await appendLog(`Devoluci¨®n guardada en ${tab} por ${ctx.from?.first_name} (${ctx.chat.id})`);
-
-    const pdfBuf = await generateTicketPDF({
-      remitente: tab,
-      ...s,
-      usuario: ctx.from?.first_name || ctx.from?.username || String(ctx.chat.id),
-    });
-
+    await appendLog(`Devolución guardada en Sheets por ${username} (${ctx.chat.id})`);
+    
+    // 3. Guardar PDF localmente (para 'ver_tickets' posteriores)
+    const localPath = path.join(process.cwd(), 'tickets', s.remitenteKey, pdfFilename);
+    await fs.writeFile(localPath, pdfBuffer);
+    
+    // 4. Enviar PDF al usuario
     await ctx.replyWithDocument(
-      { source: pdfBuf, filename: `ticket_${Date.now()}.pdf` },
-      { caption: "Aqu¨ª est¨¢ tu ticket de devoluci¨®n." }
+      { source: pdfBuffer, filename: pdfFilename },
+      { caption: `✅ ¡Listo! Aquí está tu ticket para **${s.proveedor}**.`, parse_mode: 'Markdown'}
     );
-    pdfSent = true;
+    
+    // 5. Enviar por correo (Si está configurado)
+    await sendMailWithPDF(pdfBuffer, pdfFilename, s);
+    await appendLog(`Ticket enviado por correo y a usuario: ${pdfFilename}`);
 
-    if (OWNER_CHAT_ID) {
-      try {
-        await bot.telegram.sendDocument(
-          OWNER_CHAT_ID,
-          { source: pdfBuf, filename: `ticket_${Date.now()}_owner.pdf` },
-          { caption: `Nueva devoluci¨®n registrada en ${tab} (registro en Sheets OK).` }
-        );
-      } catch (e) {
-        console.error("Error enviando notificaci¨®n al owner:", e.message);
-      }
-    }
+    await ctx.reply("Recordá conservar tu ticket PDF para seguimiento. Menú principal:", { reply_markup: mainKeyboard.reply_markup });
 
-    await ctx.reply("Record¨¢ conservar tu ticket PDF para seguimiento.");
   } catch (err) {
-    console.error("? ERROR CR¨ªTICO en guardar_devolucion:", err.message);
-    let userMessage = "? Ocurri¨® un error al guardar o enviar el ticket. ";
-    if (err.message.includes("Google Sheets no est¨¢ inicializado")) {
-      userMessage += "*Verific¨¢ la configuraci¨®n del servidor y los permisos de Sheets.*";
-    } else if (err.message.includes("API")) {
-      userMessage += "*El guardado en Google Sheets fall¨®*. Revis¨¢ los permisos del servicio de cuenta.";
+    console.error("❌ ERROR CRÍTICO en guardar_devolucion:", err.message);
+    
+    // Notificación de error al usuario
+    if (pdfBuffer) {
+      await ctx.reply("⚠️ El ticket PDF fue generado, pero *falló el registro en Sheets o el envío por correo*. ¡Avisá al administrador!", { parse_mode: 'Markdown' });
     } else {
-      userMessage += "Avis¨¢ al administrador. (Error gen¨¦rico)";
-    }
-
-    if (pdfSent) {
-      await ctx.reply(
-        "?? El ticket PDF fue enviado, pero el *registro en Google Sheets fall¨®*. Avis¨¢ al administrador."
-      );
-    } else {
-      await ctx.reply(userMessage);
+      await ctx.reply("🚨 Ocurrió un error al guardar o generar el ticket. Por favor, intentá nuevamente desde /start.");
     }
   }
 
   ctx.session = {};
-  return replyMain(ctx);
 });
 
-// --- INICIO DEL BOT ---
+
+// Manejo del flujo de texto (debe ir DESPUÉS de los 'action' handlers)
+bot.on('text', async (ctx, next) => {
+  const step = ctx.session?.step;
+  const text = ctx.message.text.trim();
+  const data = ctx.session.data;
+
+  // Si el mensaje es para un flujo específico, lo manejamos
+  if (step === 'awaiting_proveedor') {
+    data.proveedor = text;
+    ctx.session.step = 'awaiting_codigo';
+    return ctx.reply("Ingresá el **código** del artículo:", { parse_mode: 'Markdown' });
+
+  } else if (step === 'awaiting_codigo') {
+    data.codigo = text;
+    ctx.session.step = 'awaiting_descripcion';
+    return ctx.reply("Ingresá la **descripción**:", { parse_mode: 'Markdown' });
+
+  } else if (step === 'awaiting_descripcion') {
+    data.descripcion = text;
+    ctx.session.step = 'awaiting_cantidad';
+    return ctx.reply("Ingresá la **cantidad**:", { parse_mode: 'Markdown' });
+
+  } else if (step === 'awaiting_cantidad') {
+    // Validar que sea un número
+    if (!isNaN(parseInt(text)) && isFinite(text)) {
+        data.cantidad = text;
+        ctx.session.step = 'awaiting_motivo';
+        return ctx.reply("Seleccioná el **motivo** de la devolución:", { reply_markup: motivosKeyboard.reply_markup, parse_mode: 'Markdown' });
+    } else {
+        return ctx.reply("❌ Cantidad inválida. Ingresá solo números:", { parse_mode: 'Markdown' });
+    }
+
+  } else if (step === 'awaiting_otro_motivo') {
+    data.motivo = text;
+    ctx.session.step = 'awaiting_remito';
+    return ctx.reply("Ingresá el **N° Remito/Factura**:", { parse_mode: 'Markdown' });
+
+  } else if (step === 'awaiting_remito') {
+    data.remito = text;
+    ctx.session.step = 'awaiting_fechaFactura';
+    return ctx.reply("Ingresá la **Fecha de Factura** (ej: DD/MM/AAAA):", { parse_mode: 'Markdown' });
+
+  } else if (step === 'awaiting_fechaFactura') {
+    data.fechaFactura = text;
+    ctx.session.step = 'confirm_and_save';
+
+    const resumen = `\n\n*Resumen*\nRemitente: ${data.remitente}\nProveedor: ${data.proveedor}\nCódigo: ${data.codigo}\nDescripción: ${data.descripcion}\nCantidad: ${data.cantidad}\nMotivo: ${data.motivo}\nRemito/Factura: ${data.remito}\nFecha Factura: ${data.fechaFactura}`;
+
+    const keyboard = Markup.inlineKeyboard([
+      [Markup.button.callback('✅ Confirmar y Guardar', 'guardar_devolucion')],
+      [Markup.button.callback('❌ Cancelar', 'main')],
+    ]);
+
+    return ctx.reply(
+      `Datos listos para guardar: ${resumen}\n\n¿Deseás confirmar la devolución?`,
+      { reply_markup: keyboard.reply_markup, parse_mode: 'Markdown' }
+    );
+  }
+
+  // Si no estamos en un flujo, pasamos al manejador por defecto (al final)
+  await next();
+});
+
+
+// --- FLUJO: TICKETS (Ver tickets recientes) ---
+bot.action('ver_tickets', async ctx => {
+  try { await ctx.answerCbQuery(); } catch {}
+  const remitentes = Markup.inlineKeyboard([
+    [Markup.button.callback('El Cholo', 'tickets_ElCholo')],
+    [Markup.button.callback('Tejada', 'tickets_Tejada')],
+    [Markup.button.callback('Ramirez', 'tickets_Ramirez')],
+    [Markup.button.callback('↩️ Volver', 'main')]
+  ]);
+  await ctx.reply('Seleccioná el remitente para ver sus tickets (últimos 5):', remitentes);
+});
+
+bot.action(/tickets_(.+)/, async ctx => {
+  try { await ctx.answerCbQuery(); } catch {}
+  const remitente = ctx.match[1];
+  const folder = path.join(process.cwd(), 'tickets', remitente); 
+  
+  try {
+    const files = await fs.readdir(folder); 
+    // Filtra PDFs, toma los últimos 5 y los invierte (para ver el más nuevo primero)
+    const pdfFiles = files.filter(f => f.endsWith('.pdf')).slice(-5).reverse();
+    
+    if (!pdfFiles.length) return ctx.reply(`No hay tickets disponibles para ${remitente}.`);
+    
+    await ctx.reply(`Enviando los últimos ${pdfFiles.length} tickets de **${remitente}**...`, { parse_mode: 'Markdown'});
+    
+    for (const file of pdfFiles) {
+      const buffer = await fs.readFile(path.join(folder, file)); 
+      await ctx.replyWithDocument({ source: buffer, filename: file });
+    }
+    
+  } catch (e) {
+      console.error(`Error leyendo tickets para ${remitente}:`, e.message);
+      return ctx.reply('Ocurrió un error al intentar leer los tickets. Asegurate que los archivos PDF existan localmente.');
+  }
+  
+  await ctx.reply('Menú principal:', { reply_markup: mainKeyboard.reply_markup });
+});
+
+
+// --- Funcionalidades No Implementadas (Menú de Fallback) ---
+bot.action(['consultar', 'ver_proveedores', 'agregar_proveedor'], async ctx => {
+    try { await ctx.answerCbQuery(); } catch {}
+    await ctx.reply('Esta funcionalidad no está implementada aún. Usá "Registrar devolución".', { reply_markup: mainKeyboard.reply_markup });
+});
+
+
+// Handler de texto por defecto si nada anterior lo manejó
+bot.on('text', async (ctx) => {
+    // Este es un fallback si el mensaje de texto no fue manejado por los flujos.
+    return ctx.reply("⚠️ No entendí, por favor usá el menú.", {
+        reply_markup: mainKeyboard.reply_markup,
+    });
+});
+
+
+// === INICIO DEL BOT ===
+app.get('/', (req, res) => res.send(`Bot de devoluciones activo. Estado: ${botStatus}`));
+
 (async () => {
-  console.log("??? Inicializando Google Sheets...");
-  await initSheets();
+  try {
+    ensureLocalFolders();
+    initMailer();
+    await initSheets();
+    
+    app.listen(PORT, () => {
+        console.log(`🚀 Servidor Express en puerto ${PORT}`);
+    });
 
-  console.log("?? Bot de Telegram iniciando en modo Polling (Local). Presiona Ctrl+C para detener.");
-  await bot.launch();
+    await bot.launch();
+    botStatus = 'conectado (polling)';
+    console.log('✅ Bot iniciado correctamente');
 
-  process.once("SIGINT", () => bot.stop("SIGINT"));
-  process.once("SIGTERM", () => bot.stop("SIGTERM"));
+    process.once("SIGINT", () => bot.stop("SIGINT"));
+    process.once("SIGTERM", () => bot.stop("SIGTERM"));
 
-  console.log("? Bot de Telegram iniciado correctamente.");
+  } catch (error) {
+    console.error('❌ Error fatal durante la inicialización:', error.message);
+    botStatus = 'fallido';
+  }
 })();
